@@ -1,0 +1,190 @@
+syntax = "proto2";
+package Qot_GetSecuritySnapshot;
+option go_package = "github.com/hurisheng/go-futu-api/protobuf/Qot_GetSecuritySnapshot";
+
+import "Common.proto";
+import "Qot_Common.proto";
+
+message C2S
+{
+	repeated Qot_Common.Security securityList = 1; //股票
+}
+
+ // 正股类型额外数据
+message EquitySnapshotExData
+{
+    required int64 issuedShares = 1; // 发行股本,即总股本
+	required double issuedMarketVal = 2; // 总市值 =总股本*当前价格
+    required double netAsset = 3; // 资产净值
+    required double netProfit = 4; // 盈利（亏损）
+    required double earningsPershare = 5; // 每股盈利
+    required int64 outstandingShares = 6; // 流通股本
+	required double outstandingMarketVal = 7; // 流通市值 =流通股本*当前价格
+    required double netAssetPershare = 8; // 每股净资产
+    required double eyRate = 9; // 收益率（该字段为百分比字段，默认不展示%，如20实际对应20%）
+    required double peRate = 10; // 市盈率
+    required double pbRate = 11; // 市净率
+	required double peTTMRate = 12; // 市盈率TTM
+	optional double dividendTTM = 13; // 股息TTM，派息
+    optional double dividendRatioTTM = 14; // 股息率TTM（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	optional double dividendLFY = 15; // 股息LFY，上一年度派息
+    optional double dividendLFYRatio = 16; // 股息率LFY（该字段为百分比字段，默认不展示%，如20实际对应20%）
+}
+
+ // 窝轮类型额外数据
+message WarrantSnapshotExData
+{
+    required double conversionRate = 1; //换股比率
+    required int32 warrantType = 2; //Qot_Common.WarrantType,窝轮类型
+    required double strikePrice = 3; //行使价
+    required string maturityTime = 4; //到期日时间字符串
+    required string endTradeTime = 5; //最后交易日时间字符串
+    required Qot_Common.Security owner = 6; //所属正股 
+    required double recoveryPrice = 7; //收回价,仅牛熊证支持该字段
+    required int64 streetVolumn = 8; //街货量
+    required int64 issueVolumn = 9; //发行量
+    required double streetRate = 10; //街货占比（该字段为百分比字段，默认不展示%，如20实际对应20%）
+    required double delta = 11; //对冲值,仅认购认沽支持该字段
+    required double impliedVolatility = 12; //引申波幅,仅认购认沽支持该字段
+    required double premium = 13; //溢价（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	optional double maturityTimestamp = 14; //到期日时间戳
+	optional double endTradeTimestamp = 15; //最后交易日时间戳
+	optional double leverage = 16;  // 杠杆比率（倍）
+	optional double ipop = 17; // 价内/价外（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	optional double breakEvenPoint = 18; // 打和点
+	optional double conversionPrice = 19;  // 换股价
+	optional double priceRecoveryRatio = 20; // 正股距收回价（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	optional double score = 21; // 综合评分
+	optional double upperStrikePrice = 22; //上限价，仅界内证支持该字段
+	optional double lowerStrikePrice = 23; //下限价，仅界内证支持该字段
+	optional int32 inLinePriceStatus = 24; //Qot_Common.PriceType, 界内界外，仅界内证支持该字段
+}
+
+ // 期权类型额外数据
+message OptionSnapshotExData
+{
+	required int32 type = 1; //Qot_Common.OptionType,期权
+	required Qot_Common.Security owner = 2; //标的股
+	required string strikeTime = 3; //行权日
+    required double strikePrice = 4; //行权价
+	required int32 contractSize = 5; //每份合约数
+	required int32 openInterest = 6; //未平仓合约数
+	required double impliedVolatility = 7; //隐含波动率（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	required double premium = 8; //溢价（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	required double delta = 9; //希腊值 Delta
+    required double gamma = 10; //希腊值 Gamma
+	required double vega = 11; //希腊值 Vega
+    required double theta = 12; //希腊值 Theta
+    required double rho = 13; //希腊值 Rho
+	optional double strikeTimestamp = 14; //行权日时间戳  
+
+	//以下字段仅支持港股期权
+	optional int32 indexOptionType = 15; //Qot_Common.IndexOptionType, 指数期权的类型，仅在指数期权有效
+	optional int32 netOpenInterest = 16; //净未平仓合约数
+	optional int32 expiryDateDistance = 17; //距离到期日天数
+	optional double contractNominalValue = 18; //合约名义金额
+	optional double ownerLotMultiplier = 19; //相等正股手数，指数期权无该字段
+	optional int32 optionAreaType = 20; //OptionAreaType, 期权地区类型
+	optional double contractMultiplier = 21; //合约乘数，指数期权特有字段
+}
+
+// 指数类型额外数据
+message IndexSnapshotExData
+{
+    required int32 raiseCount = 1;  // 上涨支数
+    required int32 fallCount = 2;  // 下跌支数
+    required int32 equalCount = 3;  // 平盘支数
+}
+
+// 板块类型额外数据
+message PlateSnapshotExData
+{
+    required int32 raiseCount = 1;  // 上涨支数
+    required int32 fallCount = 2;  // 下跌支数
+    required int32 equalCount = 3;  // 平盘支数
+}
+
+//期货类型额外数据
+message FutureSnapshotExData
+{
+	required double lastSettlePrice = 1; //昨结
+	required int32 position = 2; //持仓量
+	required int32 positionChange = 3; //日增仓
+	required string lastTradeTime = 4; //最后交易日，只有非主连期货合约才有该字段
+	optional double lastTradeTimestamp = 5; //最后交易日时间戳，只有非主连期货合约才有该字段
+	required bool isMainContract = 6; //是否主连合约
+}
+
+ //基本快照数据
+message SnapshotBasicData
+{
+	required Qot_Common.Security security = 1; //股票
+	required int32 type = 2; //Qot_Common.SecurityType,股票类型
+	required bool isSuspend = 3; //是否停牌
+	required string listTime = 4; //上市时间字符串
+	required int32 lotSize = 5; //每手数量
+	required double priceSpread = 6; //价差
+	required string updateTime = 7; //更新时间字符串
+	required double highPrice = 8; //最高价
+	required double openPrice = 9; //开盘价
+	required double lowPrice = 10; //最低价
+	required double lastClosePrice = 11; //昨收价
+	required double curPrice = 12; //最新价
+	required int64 volume = 13; //成交量
+	required double turnover = 14; //成交额
+	required double turnoverRate = 15; //换手率（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	optional double listTimestamp = 16; //上市时间戳
+	optional double updateTimestamp = 17; //更新时间戳
+	optional double askPrice = 18;//卖价
+    optional double bidPrice = 19;//买价
+	optional int64 askVol = 20;//卖量
+    optional int64 bidVol = 21;//买量
+	optional bool enableMargin = 22; // 是否可融资，如果为true，后两个字段才有意义
+    optional double mortgageRatio = 23; // 股票抵押率（该字段为百分比字段，默认不展示%，如20实际对应20%）
+    optional double longMarginInitialRatio = 24; // 融资初始保证金率（该字段为百分比字段，默认不展示%，如20实际对应20%）
+    optional bool enableShortSell = 25; // 是否可卖空，如果为true，后三个字段才有意义
+    optional double shortSellRate = 26; // 卖空参考利率（该字段为百分比字段，默认不展示%，如20实际对应20%）
+    optional int64 shortAvailableVolume = 27; // 剩余可卖空数量（股）
+    optional double shortMarginInitialRatio = 28; // 卖空（融券）初始保证金率（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	optional double amplitude = 29; // 振幅（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	optional double avgPrice = 30; // 平均价
+	optional double bidAskRatio = 31; // 委比（该字段为百分比字段，默认不展示%，如20实际对应20%）
+	optional double volumeRatio = 32;  // 量比
+	optional double highest52WeeksPrice = 33;  // 52周最高价
+    optional double lowest52WeeksPrice = 34;  // 52周最低价
+	optional double highestHistoryPrice = 35;  // 历史最高价
+    optional double lowestHistoryPrice = 36;  // 历史最低价
+	optional Qot_Common.PreAfterMarketData preMarket = 37; //Qot_Common::PreAfterMarketData 盘前数据
+	optional Qot_Common.PreAfterMarketData afterMarket = 38; //Qot_Common::PreAfterMarketData 盘后数据
+	optional int32 secStatus = 39; //Qot_Common::SecurityStatus 股票状态
+}
+
+message Snapshot
+{
+	required SnapshotBasicData basic = 1; //快照基本数据
+	optional EquitySnapshotExData equityExData = 2; //正股快照额外数据
+	optional WarrantSnapshotExData warrantExData = 3; //窝轮快照额外数据
+	optional OptionSnapshotExData optionExData = 4; //期权快照额外数据
+	optional IndexSnapshotExData indexExData = 5; //指数快照额外数据
+	optional PlateSnapshotExData plateExData = 6; //板块快照额外数据
+	optional FutureSnapshotExData futureExData = 7; //期货类型额外数据
+}
+
+message S2C
+{
+	repeated Snapshot snapshotList = 1; //股票快照
+}
+
+message Request
+{
+	required C2S c2s = 1;
+}
+
+message Response
+{
+	required int32 retType = 1 [default = -400]; //RetType,返回结果
+	optional string retMsg = 2;
+	optional int32 errCode = 3;
+	
+	optional S2C s2c = 4;
+}
