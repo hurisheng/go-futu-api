@@ -5,17 +5,17 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/hurisheng/go-futu-api/conn"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/hurisheng/go-futu-api/protobuf/GetGlobalState"
 	"github.com/hurisheng/go-futu-api/protobuf/InitConnect"
 	"github.com/hurisheng/go-futu-api/protobuf/KeepAlive"
 	"github.com/hurisheng/go-futu-api/protobuf/Notify"
-	"google.golang.org/protobuf/proto"
 )
 
 // FutuAPI 是富途开放API的主要操作对象。
 type FutuAPI struct {
-	server *conn.Conn
+	server *conn
 	ticker *time.Ticker
 	done   chan bool
 }
@@ -30,7 +30,7 @@ type Config struct {
 // NewFutuAPI 创建API对象，并启动goroutine进行发送保活心跳.
 func NewFutuAPI(config *Config) (*FutuAPI, error) {
 	// connect socket
-	conn, err := conn.NewConn(config.Address)
+	conn, err := newConn(config.Address)
 	if err != nil {
 		return nil, fmt.Errorf("connect to server error: %w", err)
 	}
@@ -56,7 +56,7 @@ func NewFutuAPI(config *Config) (*FutuAPI, error) {
 // Close 关闭连接.
 func (api *FutuAPI) Close() error {
 	api.done <- true
-	if err := api.server.Close(); err != nil {
+	if err := api.server.close(); err != nil {
 		return fmt.Errorf("close server error: %w", err)
 	}
 	return nil
@@ -109,7 +109,7 @@ func (api *FutuAPI) send(protoID uint32, req proto.Message, out interface{}) err
 	if err != nil {
 		return fmt.Errorf("parameter validation error: %w", err)
 	}
-	in, err := api.server.Send(protoID, buf)
+	in, err := api.server.send(protoID, buf)
 	if err != nil {
 		return fmt.Errorf("send request error: %w", err)
 	}
@@ -131,7 +131,7 @@ func (api *FutuAPI) subscribe(protoID uint32, out interface{}) error {
 	if err != nil {
 		return fmt.Errorf("parameter validation error: %w", err)
 	}
-	in, err := api.server.Subscribe(protoID)
+	in, err := api.server.subscribe(protoID)
 	if err != nil {
 		return fmt.Errorf("subscribe error: %w", err)
 	}

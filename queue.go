@@ -1,6 +1,8 @@
-package conn
+package futuapi
 
-import "sync"
+import (
+	"sync"
+)
 
 type respHandler interface {
 	handle(serialNo uint32, body []byte)

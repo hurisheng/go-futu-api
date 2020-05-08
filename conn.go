@@ -1,4 +1,4 @@
-package conn
+package futuapi
 
 import (
 	"bytes"
@@ -28,7 +28,7 @@ var (
 
 // Conn is socket connection to server daemon. It manages socket communication with a list of receiving operation.
 // There are 2 kinds of receiving, one time and continuously.
-type Conn struct {
+type conn struct {
 	socket net.Conn
 
 	queue      map[uint32]respHandler
@@ -40,13 +40,13 @@ type Conn struct {
 }
 
 // NewConn connects to server daemon.
-func NewConn(address string) (*Conn, error) {
+func newConn(address string) (*conn, error) {
 	socket, err := net.Dial("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("connect socket error: %w", err)
 	}
 
-	c := &Conn{
+	c := &conn{
 		socket: socket,
 		queue:  make(map[uint32]respHandler),
 	}
@@ -55,7 +55,7 @@ func NewConn(address string) (*Conn, error) {
 }
 
 // Close disconnects from server and close all pending channel.
-func (c *Conn) Close() error {
+func (c *conn) close() error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -72,7 +72,7 @@ func (c *Conn) Close() error {
 	return nil
 }
 
-func (c *Conn) receive() {
+func (c *conn) receive() {
 	for {
 		header := new(protoHeader)
 		// read header
@@ -107,7 +107,7 @@ func (c *Conn) receive() {
 
 // Send sends data to server and return the receiving buffer immediately. When data is returned from server, data is returned via channel.
 // Send can be call multiple times for same protoID.
-func (c *Conn) Send(protoID uint32, body []byte) (<-chan []byte, error) {
+func (c *conn) send(protoID uint32, body []byte) (<-chan []byte, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if c.closed {
@@ -157,7 +157,7 @@ func (c *Conn) Send(protoID uint32, body []byte) (<-chan []byte, error) {
 
 // Subscribe returns the receiving channel for protoID. This function can be call only once for same protoID.
 // When incoming data arrived, a new buffer will be sent to the channel.
-func (c *Conn) Subscribe(protoID uint32) (<-chan []byte, error) {
+func (c *conn) subscribe(protoID uint32) (<-chan []byte, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if c.closed {
