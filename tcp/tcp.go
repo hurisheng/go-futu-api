@@ -55,7 +55,6 @@ func newConn(c net.Conn, de Decoder) (*Conn, error) {
 		c:  c,
 		de: de,
 	}
-	go conn.recv()
 	return &conn, nil
 }
 
@@ -69,13 +68,13 @@ func (conn *Conn) Close() error {
 }
 
 // recv 持续从连接读取数据，在单独的goroutine中处理协议返回的Handler
-func (conn *Conn) recv() {
+func (conn *Conn) Recv() error {
 	for {
 		h, err := conn.de.ReadFrom(conn.c)
 		if err != nil {
 			// 如果连接关闭，停止接收数据，其他为数据错误，可忽略
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-				return
+				return err
 			}
 		} else {
 			// 成功读取数据，执行处理方法

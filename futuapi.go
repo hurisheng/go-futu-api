@@ -45,6 +45,10 @@ type FutuAPI struct {
 	ticker *time.Ticker
 	// 心跳定时器关闭信号通道
 	done chan struct{}
+	// 心跳回调
+	hbCallback func()
+	// 链接断开回调
+	connCallback func(error)
 }
 
 // NewFutuAPI 创建API对象，并启动goroutine进行发送保活心跳.
@@ -80,6 +84,14 @@ func (api *FutuAPI) SetRecvNotify(recv bool) {
 	api.recvNotify = recv
 }
 
+func (api *FutuAPI) SetOnHeartBeat(cb func()) {
+	api.hbCallback = cb
+}
+
+func (api *FutuAPI) SetOnDisconnected(cb func(error)) {
+	api.connCallback = cb
+}
+
 func (api *FutuAPI) SetEncAlgo(algo common.PacketEncAlgo) {
 	api.encAlgo = algo
 }
@@ -98,6 +110,14 @@ func (api *FutuAPI) Connect(ctx context.Context, address string) error {
 	if err != nil {
 		return err
 	}
+
+	go func() {
+		err := conn.Recv()
+		if api.connCallback != nil {
+			api.connCallback(err)
+		}
+	}()
+
 	api.conn = conn
 	resp, err := api.initConnect(ctx, api.clientVer, api.clientID, api.recvNotify, api.encAlgo, api.protoFmt, "golang")
 	if err != nil {
@@ -129,8 +149,9 @@ func (api *FutuAPI) heartBeat(ctx context.Context) {
 			api.ticker.Stop()
 			return
 		case <-api.ticker.C:
-			if _, err := api.keepAlive(ctx, time.Now().Unix()); err != nil {
-				return
+			_, err := api.keepAlive(ctx, time.Now().Unix())
+			if err == nil && api.hbCallback != nil {
+				api.hbCallback()
 			}
 		}
 	}
