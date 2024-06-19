@@ -94,7 +94,7 @@ func (api *FutuAPI) serialNo() uint32 {
 
 // 连接FutuOpenD
 func (api *FutuAPI) Connect(ctx context.Context, address string) error {
-	conn, err := tcp.Dial("tcp", address, protocol.NewDecoder(api.reg))
+	conn, err := tcp.Dial(address, protocol.NewDecoder(api.reg))
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (api *FutuAPI) get(proto uint32, req proto.Message, out protocol.RespChan) 
 		return err
 	}
 	// 向服务器发送req
-	if err := api.conn.Send(protocol.NewEncoder(proto, se, req)); err != nil {
+	if err := api.conn.Write(protocol.NewEncoder(proto, se, req)); err != nil {
 		if err := api.reg.RemoveChan(proto, se); err != nil {
 			return err
 		}

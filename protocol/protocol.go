@@ -1,3 +1,4 @@
+// Package protocol converts message into futu protocol
 package protocol
 
 import (
@@ -7,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"net"
 	"reflect"
 	"sync"
 
@@ -42,7 +42,7 @@ func NewEncoder(proto uint32, serial uint32, msg proto.Message) *FutuEncoder {
 	}
 }
 
-func (en *FutuEncoder) WriteTo(c net.Conn) error {
+func (en *FutuEncoder) EncodeTo(w io.Writer) error {
 	// 序列化message
 	b, err := proto.Marshal(en.msg)
 	if err != nil {
@@ -56,10 +56,7 @@ func (en *FutuEncoder) WriteTo(c net.Conn) error {
 		ProtoVer:     0,
 		SerialNo:     en.serial,
 		BodyLen:      uint32(len(b)),
-	}
-	s := sha1.Sum(b)
-	for i, c := range s {
-		h.BodySHA1[i] = c
+		BodySHA1:     sha1.Sum(b),
 	}
 	// 将header和body按顺序写入buffer，然后将buffer写入TCP连接
 	var buf bytes.Buffer
@@ -69,7 +66,7 @@ func (en *FutuEncoder) WriteTo(c net.Conn) error {
 	if _, err := buf.Write(b); err != nil {
 		return err
 	}
-	if _, err := buf.WriteTo(c); err != nil {
+	if _, err := buf.WriteTo(w); err != nil {
 		return err
 	}
 	return nil
@@ -85,12 +82,12 @@ func NewDecoder(reg *Registry) *FutuDecoder {
 	return &FutuDecoder{reg: reg}
 }
 
-func (de *FutuDecoder) ReadFrom(c net.Conn) (tcp.Handler, error) {
+func (de *FutuDecoder) DecodeFrom(r io.Reader) (tcp.Handler, error) {
 	// 先读出header，然后根据长度读出body
 	// 用registry，proto，serial和body生成当前数据的handler，由tcp框架在gouroutine中处理
 	var h header
 	// read header
-	if err := binary.Read(c, binary.LittleEndian, &h); err != nil {
+	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
 		return nil, err
 	}
 	if h.HeaderFlag != [2]byte{'F', 'T'} {
@@ -98,15 +95,12 @@ func (de *FutuDecoder) ReadFrom(c net.Conn) (tcp.Handler, error) {
 	}
 	// read body
 	b := make([]byte, h.BodyLen)
-	if _, err := io.ReadFull(c, b); err != nil {
+	if _, err := io.ReadFull(r, b); err != nil {
 		return nil, err
 	}
 	// verify body
-	s := sha1.Sum(b)
-	for i, c := range s {
-		if h.BodySHA1[i] != c {
-			return nil, errors.New("SHA1 sum error")
-		}
+	if h.BodySHA1 != sha1.Sum(b) {
+		return nil, errors.New("SHA1 sum error")
 	}
 	log.Printf("read: proto %v serial %v", h.ProtoID, h.SerialNo)
 	return &handler{
@@ -224,7 +218,7 @@ type PBChan struct {
 
 var _ RespChan = (*PBChan)(nil)
 
-func NewPBChan(i interface{}) (*PBChan, error) {
+func NewPBChan(i any) (*PBChan, error) {
 	// i必须为chan *T类型，T为struct，*T实现proto.Message
 	// 通过reflect检查out的类型是否正确
 	v, ct := reflect.ValueOf(i), reflect.TypeOf(i)
