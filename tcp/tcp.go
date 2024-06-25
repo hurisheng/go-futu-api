@@ -4,8 +4,10 @@ package tcp
 import (
 	"errors"
 	"io"
+	"log"
 	"net"
-	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Encoder 是tcp连接的编码器
@@ -24,14 +26,20 @@ type Decoder interface {
 
 // Handler 处理解码后的数据
 type Handler interface {
-	Handle()
+	Handle() error
+}
+
+type HandlerFunc func() error
+
+func (f HandlerFunc) Handle() error {
+	return f()
 }
 
 // Conn 根据Protocol读写TCP数据
 type Conn struct {
 	c  net.Conn
 	de Decoder
-	wg sync.WaitGroup
+	g  errgroup.Group
 }
 
 // Dial 通过tcp连接目标地址address
@@ -40,30 +48,38 @@ func Dial(address string, de Decoder) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newConn(c, de)
+	return newConn(c, de), nil
 }
 
-// Listen 在地址address上监听tcp连接
-func Listen(address string) (net.Listener, error) {
-	return net.Listen("tcp", address)
-}
-
-// Accept 等待并返回新的tcp连接
-func Accept(ln net.Listener, de Decoder) (*Conn, error) {
-	c, err := ln.Accept()
-	if err != nil {
-		return nil, err
-	}
-	return newConn(c, de)
-}
-
-func newConn(c net.Conn, de Decoder) (*Conn, error) {
+func newConn(c net.Conn, de Decoder) *Conn {
 	conn := Conn{
 		c:  c,
 		de: de,
 	}
-	go conn.recv()
-	return &conn, nil
+	// 持续从连接读取数据，在单独的goroutine中处理协议返回的Handler
+	conn.g.Go(func() error {
+		for {
+			h, err := conn.de.DecodeFrom(conn.c)
+			if err == nil {
+				// 成功读取数据，在单独goroutine中执行处理方法
+				conn.g.Go(func() error {
+					// 保护goroutine不因为panic影响其他goroutine
+					defer func() {
+						if err := recover(); err != nil {
+							log.Printf("panic in handler: %v", err)
+						}
+					}()
+					return h.Handle()
+				})
+			} else if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				// 如果连接关闭，停止接收数据，其他为数据错误，可忽略
+				return nil
+			} else {
+				log.Printf("decode error: %v", err)
+			}
+		}
+	})
+	return &conn
 }
 
 // Close 关闭Conn，然后等待已接收数据处理完成
@@ -71,28 +87,7 @@ func (conn *Conn) Close() error {
 	if err := conn.c.Close(); err != nil {
 		return err
 	}
-	conn.wg.Wait()
-	return nil
-}
-
-// recv 持续从连接读取数据，在单独的goroutine中处理协议返回的Handler
-func (conn *Conn) recv() {
-	for {
-		h, err := conn.de.DecodeFrom(conn.c)
-		if err != nil {
-			// 如果连接关闭，停止接收数据，其他为数据错误，可忽略
-			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-				return
-			}
-		} else {
-			// 成功读取数据，执行处理方法
-			conn.wg.Add(1)
-			go func() {
-				defer conn.wg.Done()
-				h.Handle()
-			}()
-		}
-	}
+	return conn.g.Wait()
 }
 
 func (conn *Conn) Write(en Encoder) error {
