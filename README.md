@@ -29,7 +29,7 @@
     ft := futuapi.NewFutuAPI()
     ```
 
-1. 设置连接参数 (可选)
+1. 设置连接参数
 
     ```
     ft.SetClientInfo("MyFutuAPI", 0)
