@@ -6,23 +6,31 @@ import (
 	"github.com/hurisheng/go-futu-api/pb/qotcommon"
 	"github.com/hurisheng/go-futu-api/pb/qotgetstaticinfo"
 	"github.com/hurisheng/go-futu-api/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ProtoIDQotGetStaticInfo = 3202 //Qot_GetStaticInfo	获取股票静态信息
-)
+const ProtoIDQotGetStaticInfo = 3202 //Qot_GetStaticInfo	获取股票静态信息
+
+func init() {
+	workers[ProtoIDQotGetStaticInfo] = protocol.NewGetter()
+}
 
 // 获取静态数据
-func (api *FutuAPI) GetStockBasicInfo(ctx context.Context, markte qotcommon.QotMarket, secType qotcommon.SecurityType, securities []*Security) ([]*SecurityStaticInfo, error) {
-	req := qotgetstaticinfo.Request{
+func (api *FutuAPI) GetStockBasicInfo(ctx context.Context, market qotcommon.QotMarket, secType qotcommon.SecurityType, securities []*qotcommon.Security) ([]*qotcommon.SecurityStaticInfo, error) {
+	if market == qotcommon.QotMarket_QotMarket_Unknown && len(securities) == 0 {
+		return nil, ErrParameters
+	}
+	req := &qotgetstaticinfo.Request{
 		C2S: &qotgetstaticinfo.C2S{
-			Market:       (*int32)(&markte),
-			SecType:      (*int32)(&secType),
-			SecurityList: securityList(securities).pb(),
+			SecType:      proto.Int32(int32(secType)),
+			SecurityList: securities,
 		},
 	}
-	ch := make(qotgetstaticinfo.ResponseChan)
-	if err := api.get(ProtoIDQotGetStaticInfo, &req, ch); err != nil {
+	if market != qotcommon.QotMarket_QotMarket_Unknown {
+		req.C2S.Market = proto.Int32(int32(market))
+	}
+	ch := make(chan *qotgetstaticinfo.Response)
+	if err := api.proto.RegisterGet(ProtoIDQotGetStaticInfo, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
 	select {
@@ -32,6 +40,6 @@ func (api *FutuAPI) GetStockBasicInfo(ctx context.Context, markte qotcommon.QotM
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return securityStaticInfoListFromPB(resp.GetS2C().GetStaticInfoList()), protocol.Error(resp)
+		return resp.GetS2C().GetStaticInfoList(), protocol.Error(resp)
 	}
 }

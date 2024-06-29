@@ -3,26 +3,35 @@ package futuapi
 import (
 	"context"
 
+	"github.com/hurisheng/go-futu-api/pb/trdcommon"
 	"github.com/hurisheng/go-futu-api/pb/trdgethistoryorderfilllist"
 	"github.com/hurisheng/go-futu-api/protocol"
 )
 
-const (
-	ProtoIDTrdGetHistoryOrderFillList = 2222 //Trd_GetHistoryOrderFillList	获取历史成交列表
-)
+const ProtoIDTrdGetHistoryOrderFillList = 2222 //Trd_GetHistoryOrderFillList	获取历史成交列表
+
+func init() {
+	workers[ProtoIDTrdGetHistoryOrderFillList] = protocol.NewGetter()
+}
 
 // 查询历史成交
-func (api *FutuAPI) GetHistoryDeal(ctx context.Context, header *TrdHeader, filter *TrdFilterConditions) ([]*OrderFill, error) {
-	req := trdgethistoryorderfilllist.Request{
+func (api *FutuAPI) GetHistoryDeal(ctx context.Context, header *trdcommon.TrdHeader, filter *trdcommon.TrdFilterConditions) ([]*trdcommon.OrderFill, error) {
+
+	if header == nil || filter == nil {
+		return nil, ErrParameters
+	}
+	req := &trdgethistoryorderfilllist.Request{
 		C2S: &trdgethistoryorderfilllist.C2S{
-			Header:           header.pb(),
-			FilterConditions: filter.pb(),
+			Header:           header,
+			FilterConditions: filter,
 		},
 	}
-	ch := make(trdgethistoryorderfilllist.ResponseChan)
-	if err := api.get(ProtoIDTrdGetHistoryOrderFillList, &req, ch); err != nil {
+
+	ch := make(chan *trdgethistoryorderfilllist.Response)
+	if err := api.proto.RegisterGet(ProtoIDTrdGetHistoryOrderFillList, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
+
 	select {
 	case <-ctx.Done():
 		return nil, ErrInterrupted
@@ -30,6 +39,6 @@ func (api *FutuAPI) GetHistoryDeal(ctx context.Context, header *TrdHeader, filte
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return orderFillListFromPB(resp.GetS2C().GetOrderFillList()), protocol.Error(resp)
+		return resp.GetS2C().GetOrderFillList(), protocol.Error(resp)
 	}
 }

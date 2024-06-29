@@ -3,31 +3,43 @@ package futuapi
 import (
 	"context"
 
+	"github.com/hurisheng/go-futu-api/pb/trdcommon"
 	"github.com/hurisheng/go-futu-api/pb/trdgetpositionlist"
 	"github.com/hurisheng/go-futu-api/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ProtoIDTrdGetPositionList = 2102 //Trd_GetPositionList	获取账户持仓
-)
+const ProtoIDTrdGetPositionList = 2102 //Trd_GetPositionList	获取账户持仓
+
+func init() {
+	workers[ProtoIDTrdGetPositionList] = protocol.NewGetter()
+}
 
 // 查询持仓
-func (api *FutuAPI) GetPositionList(ctx context.Context, header *TrdHeader, filter *TrdFilterConditions, minPLRatio float64, maxPLRation float64, refresh bool) ([]*Position, error) {
-	req := trdgetpositionlist.Request{
+func (api *FutuAPI) GetPositionList(ctx context.Context, header *trdcommon.TrdHeader,
+	filter *trdcommon.TrdFilterConditions, minPLRatio *OptionalDouble, maxPLRation *OptionalDouble, refresh *OptionalBool) ([]*trdcommon.Position, error) {
+
+	if header == nil {
+		return nil, ErrParameters
+	}
+	req := &trdgetpositionlist.Request{
 		C2S: &trdgetpositionlist.C2S{
-			Header:           header.pb(),
-			FilterConditions: filter.pb(),
-			RefreshCache:     &refresh,
+			Header:           header,
+			FilterConditions: filter,
 		},
 	}
-	if minPLRatio != 0 {
-		req.C2S.FilterPLRatioMin = &minPLRatio
+	if minPLRatio != nil {
+		req.C2S.FilterPLRatioMin = proto.Float64(minPLRatio.Value)
 	}
-	if maxPLRation != 0 {
-		req.C2S.FilterPLRatioMax = &maxPLRation
+	if maxPLRation != nil {
+		req.C2S.FilterPLRatioMax = proto.Float64(maxPLRation.Value)
 	}
-	ch := make(trdgetpositionlist.ResponseChan)
-	if err := api.get(ProtoIDTrdGetPositionList, &req, ch); err != nil {
+	if refresh != nil {
+		req.C2S.RefreshCache = proto.Bool(refresh.Value)
+	}
+
+	ch := make(chan *trdgetpositionlist.Response)
+	if err := api.proto.RegisterGet(ProtoIDTrdGetPositionList, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
 	select {
@@ -37,6 +49,6 @@ func (api *FutuAPI) GetPositionList(ctx context.Context, header *TrdHeader, filt
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return positionListFromPB(resp.GetS2C().GetPositionList()), protocol.Error(resp)
+		return resp.GetS2C().GetPositionList(), protocol.Error(resp)
 	}
 }

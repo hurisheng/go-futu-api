@@ -6,27 +6,39 @@ import (
 	"github.com/hurisheng/go-futu-api/pb/trdcommon"
 	"github.com/hurisheng/go-futu-api/pb/trdgetfunds"
 	"github.com/hurisheng/go-futu-api/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ProtoIDTrdGetFunds = 2101 //Trd_GetFunds	获取账户资金
-)
+const ProtoIDTrdGetFunds = 2101 //Trd_GetFunds	获取账户资金
+
+func init() {
+	workers[ProtoIDTrdGetFunds] = protocol.NewGetter()
+}
 
 // 查询账户资金
-func (api *FutuAPI) GetFunds(ctx context.Context, header *TrdHeader, refresh bool, currency trdcommon.Currency) (*Funds, error) {
-	req := trdgetfunds.Request{
+func (api *FutuAPI) GetFunds(ctx context.Context, header *trdcommon.TrdHeader,
+	refresh *OptionalBool, currency trdcommon.Currency) (*trdcommon.Funds, error) {
+
+	if header == nil {
+		return nil, ErrParameters
+	}
+	req := &trdgetfunds.Request{
 		C2S: &trdgetfunds.C2S{
-			Header:       header.pb(),
-			RefreshCache: &refresh,
+			Header: header,
 		},
 	}
-	if currency != 0 {
-		req.C2S.Currency = (*int32)(&currency)
+	if refresh != nil {
+		req.C2S.RefreshCache = proto.Bool(refresh.Value)
 	}
-	ch := make(trdgetfunds.ResponseChan)
-	if err := api.get(ProtoIDTrdGetFunds, &req, ch); err != nil {
+	if currency != trdcommon.Currency_Currency_Unknown {
+		req.C2S.Currency = proto.Int32(int32(currency))
+	}
+
+	ch := make(chan *trdgetfunds.Response)
+	if err := api.proto.RegisterGet(ProtoIDTrdGetFunds, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
+
 	select {
 	case <-ctx.Done():
 		return nil, ErrInterrupted
@@ -34,6 +46,6 @@ func (api *FutuAPI) GetFunds(ctx context.Context, header *TrdHeader, refresh boo
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return fundsFromPB(resp.GetS2C().GetFunds()), protocol.Error(resp)
+		return resp.GetS2C().GetFunds(), protocol.Error(resp)
 	}
 }

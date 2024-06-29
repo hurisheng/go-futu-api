@@ -6,37 +6,46 @@ import (
 	"github.com/hurisheng/go-futu-api/pb/qotcommon"
 	"github.com/hurisheng/go-futu-api/pb/qotrequesthistorykl"
 	"github.com/hurisheng/go-futu-api/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ProtoIDQotRequestHistoryKL = 3103 //Qot_RequestHistoryKL	在线获取单只股票一段历史 K 线
-)
+const ProtoIDQotRequestHistoryKL = 3103 //Qot_RequestHistoryKL	在线获取单只股票一段历史 K 线
+
+func init() {
+	workers[ProtoIDQotRequestHistoryKL] = protocol.NewGetter()
+}
 
 // 获取历史 K 线
-func (api *FutuAPI) RequestHistoryKLine(ctx context.Context, security *Security, begin string, end string, klType qotcommon.KLType, rehabType qotcommon.RehabType,
-	maxNum int32, fields qotcommon.KLFields, nextKey []byte, extTime bool) (*HistoryKLine, error) {
+func (api *FutuAPI) RequestHistoryKLine(ctx context.Context, security *qotcommon.Security, begin string, end string, klType qotcommon.KLType, rehabType qotcommon.RehabType,
+	maxNum *OptionalInt32, klFields qotcommon.KLFields, nextKey []byte, extTime *OptionalBool) (*qotrequesthistorykl.S2C, error) {
+
+	if security == nil || begin == "" || end == "" ||
+		klType == qotcommon.KLType_KLType_Unknown || rehabType == qotcommon.RehabType_RehabType_None {
+		return nil, ErrParameters
+	}
 	// 请求参数
-	req := qotrequesthistorykl.Request{
+	req := &qotrequesthistorykl.Request{
 		C2S: &qotrequesthistorykl.C2S{
-			RehabType:    (*int32)(&rehabType),
-			KlType:       (*int32)(&klType),
-			Security:     security.pb(),
-			BeginTime:    &begin,
-			EndTime:      &end,
-			NextReqKey:   nextKey,
-			ExtendedTime: &extTime,
+			RehabType:  proto.Int32(int32(rehabType)),
+			KlType:     proto.Int32(int32(klType)),
+			Security:   security,
+			BeginTime:  proto.String(begin),
+			EndTime:    proto.String(end),
+			NextReqKey: nextKey,
 		},
 	}
-	if maxNum != 0 {
-		req.C2S.MaxAckKLNum = &maxNum
+	if maxNum != nil {
+		req.C2S.MaxAckKLNum = proto.Int32(maxNum.Value)
 	}
-	if fields != 0 {
-		var klFields int64 = int64(fields)
-		req.C2S.NeedKLFieldsFlag = &klFields
+	if klFields != qotcommon.KLFields_KLFields_None {
+		req.C2S.NeedKLFieldsFlag = proto.Int64(int64(klFields))
+	}
+	if extTime != nil {
+		req.C2S.ExtendedTime = proto.Bool(extTime.Value)
 	}
 	// 发送请求，同步返回结果
-	ch := make(qotrequesthistorykl.ResponseChan)
-	if err := api.get(ProtoIDQotRequestHistoryKL, &req, ch); err != nil {
+	ch := make(chan *qotrequesthistorykl.Response)
+	if err := api.proto.RegisterGet(ProtoIDQotRequestHistoryKL, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
 	select {
@@ -46,32 +55,6 @@ func (api *FutuAPI) RequestHistoryKLine(ctx context.Context, security *Security,
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return historyKLineFromPB(resp.GetS2C()), protocol.Error(resp)
+		return resp.GetS2C(), protocol.Error(resp)
 	}
-}
-
-type HistoryKLine struct {
-	Security *Security //证券
-	KLines   []*KLine  //K 线数据
-	NextKey  []byte    //分页请求 key。一次请求没有返回所有数据时，下次请求带上这个 key，会接着请求
-}
-
-func historyKLineFromPB(pb *qotrequesthistorykl.S2C) *HistoryKLine {
-	if pb == nil {
-		return nil
-	}
-	return &HistoryKLine{
-		Security: securityFromPB(pb.GetSecurity()),
-		KLines:   kLineListFromPB(pb.GetKlList()),
-		NextKey:  nextKeyFromPB(pb.GetNextReqKey()),
-	}
-}
-
-func nextKeyFromPB(pb []byte) []byte {
-	if pb == nil {
-		return nil
-	}
-	k := make([]byte, len(pb))
-	copy(k, pb)
-	return k
 }

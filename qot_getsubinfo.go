@@ -5,21 +5,26 @@ import (
 
 	"github.com/hurisheng/go-futu-api/pb/qotgetsubinfo"
 	"github.com/hurisheng/go-futu-api/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ProtoIDQotGetSubInfo = 3003 //Qot_GetSubInfo	获取订阅信息
-)
+const ProtoIDQotGetSubInfo = 3003 //Qot_GetSubInfo	获取订阅信息
+
+func init() {
+	workers[ProtoIDQotGetSubInfo] = protocol.NewGetter()
+}
 
 // 获取订阅信息
-func (api *FutuAPI) QuerySubscription(ctx context.Context, isAll bool) (*Subscription, error) {
+func (api *FutuAPI) QuerySubscription(ctx context.Context, isAll bool) (*qotgetsubinfo.S2C, error) {
 	// 请求参数
-	req := qotgetsubinfo.Request{C2S: &qotgetsubinfo.C2S{
-		IsReqAllConn: &isAll,
-	}}
+	req := &qotgetsubinfo.Request{
+		C2S: &qotgetsubinfo.C2S{
+			IsReqAllConn: proto.Bool(isAll),
+		},
+	}
 	// 发送请求，同步返回结果
-	ch := make(qotgetsubinfo.ResponseChan)
-	if err := api.get(ProtoIDQotGetSubInfo, &req, ch); err != nil {
+	ch := make(chan *qotgetsubinfo.Response)
+	if err := api.proto.RegisterGet(ProtoIDQotGetSubInfo, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
 	select {
@@ -29,23 +34,6 @@ func (api *FutuAPI) QuerySubscription(ctx context.Context, isAll bool) (*Subscri
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return subscriptionFromPB(resp.GetS2C()), protocol.Error(resp)
-	}
-}
-
-type Subscription struct {
-	ConnSubInfos   []*ConnSubInfo //单条连接订阅信息
-	TotalUsedQuota int32          //*FutuOpenD 已使用的订阅额度
-	RemainQuota    int32          //*FutuOpenD 剩余订阅额度
-}
-
-func subscriptionFromPB(pb *qotgetsubinfo.S2C) *Subscription {
-	if pb == nil {
-		return nil
-	}
-	return &Subscription{
-		TotalUsedQuota: pb.GetTotalUsedQuota(),
-		RemainQuota:    pb.GetRemainQuota(),
-		ConnSubInfos:   connSubInfoListFromPB(pb.GetConnSubInfoList()),
+		return resp.GetS2C(), protocol.Error(resp)
 	}
 }

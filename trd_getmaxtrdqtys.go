@@ -6,35 +6,53 @@ import (
 	"github.com/hurisheng/go-futu-api/pb/trdcommon"
 	"github.com/hurisheng/go-futu-api/pb/trdgetmaxtrdqtys"
 	"github.com/hurisheng/go-futu-api/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ProtoIDTrdGetMaxTrdQtys = 2111 //Trd_GetMaxTrdQtys	获取最大交易数量
-)
+const ProtoIDTrdGetMaxTrdQtys = 2111 //Trd_GetMaxTrdQtys	获取最大交易数量
+
+func init() {
+	workers[ProtoIDTrdGetMaxTrdQtys] = protocol.NewGetter()
+}
 
 // 查询最大可买可卖
-func (api *FutuAPI) GetMaxTrdQtys(ctx context.Context, header *TrdHeader, orderType trdcommon.OrderType, code string, price float64,
-	orderID uint64, adjust bool, sideAndLimit float64, secMarket trdcommon.TrdSecMarket) (*MaxTrdQtys, error) {
-	req := trdgetmaxtrdqtys.Request{
+func (api *FutuAPI) GetMaxTrdQtys(ctx context.Context, header *trdcommon.TrdHeader, orderType trdcommon.OrderType, code string, price float64,
+	orderID *OptionalUInt64, adjust *OptionalBool, sideAndLimit *OptionalDouble, secMarket trdcommon.TrdSecMarket, orderIDEx string) (*trdcommon.MaxTrdQtys, error) {
+	// required parameters should not be invalid
+	if header == nil || orderType == trdcommon.OrderType_OrderType_Unknown || code == "" {
+		return nil, ErrParameters
+	}
+	// request information
+	req := &trdgetmaxtrdqtys.Request{
 		C2S: &trdgetmaxtrdqtys.C2S{
-			Header:             header.pb(),
-			OrderType:          (*int32)(&orderType),
-			Code:               &code,
-			Price:              &price,
-			AdjustPrice:        &adjust,
-			AdjustSideAndLimit: &sideAndLimit,
+			Header:    header,
+			OrderType: proto.Int32(int32(orderType)),
+			Code:      proto.String(code),
+			Price:     proto.Float64(price),
 		},
 	}
-	if orderID != 0 {
-		req.C2S.OrderID = &orderID
+	// optional parameters
+	if orderID != nil {
+		req.C2S.OrderID = proto.Uint64(orderID.Value)
 	}
-	if secMarket != 0 {
-		req.C2S.SecMarket = (*int32)(&secMarket)
+	if adjust != nil {
+		req.C2S.AdjustPrice = proto.Bool(adjust.Value)
 	}
-	ch := make(trdgetmaxtrdqtys.ResponseChan)
-	if err := api.get(ProtoIDTrdGetMaxTrdQtys, &req, ch); err != nil {
+	if sideAndLimit != nil {
+		req.C2S.AdjustSideAndLimit = proto.Float64(sideAndLimit.Value)
+	}
+	if secMarket != trdcommon.TrdSecMarket_TrdSecMarket_Unknown {
+		req.C2S.SecMarket = proto.Int32(int32(secMarket))
+	}
+	if orderIDEx != "" {
+		req.C2S.OrderIDEx = proto.String(orderIDEx)
+	}
+	// send request and register receiving channel
+	ch := make(chan *trdgetmaxtrdqtys.Response)
+	if err := api.proto.RegisterGet(ProtoIDTrdGetMaxTrdQtys, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
+	// wait for context signal or receiving result from channel then return to caller
 	select {
 	case <-ctx.Done():
 		return nil, ErrInterrupted
@@ -42,6 +60,6 @@ func (api *FutuAPI) GetMaxTrdQtys(ctx context.Context, header *TrdHeader, orderT
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return maxTrdQtysFromPB(resp.GetS2C().GetMaxTrdQtys()), protocol.Error(resp)
+		return resp.GetS2C().GetMaxTrdQtys(), protocol.Error(resp)
 	}
 }

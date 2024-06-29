@@ -3,25 +3,64 @@ package futuapi
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	"github.com/hurisheng/go-futu-api/pb/common"
+	"github.com/hurisheng/go-futu-api/pb/getdelaystatistics"
 	"github.com/hurisheng/go-futu-api/pb/getglobalstate"
+	"github.com/hurisheng/go-futu-api/pb/getuserinfo"
 	"github.com/hurisheng/go-futu-api/pb/initconnect"
 	"github.com/hurisheng/go-futu-api/pb/keepalive"
 	"github.com/hurisheng/go-futu-api/pb/notify"
-	"github.com/hurisheng/go-futu-api/pb/qotcommon"
+	"github.com/hurisheng/go-futu-api/pb/verification"
 	"github.com/hurisheng/go-futu-api/protocol"
-	"github.com/hurisheng/go-futu-api/tcp"
 )
 
+const (
+	ProtoIDInitConnect        = 1001 //InitConnect	初始化连接
+	ProtoIDGetGlobalState     = 1002 //GetGlobalState	获取全局状态
+	ProtoIDNotify             = 1003 //Notify	系统通知推送
+	ProtoIDKeepAlive          = 1004 //KeepAlive	保活心跳
+	ProtoIDGetUserInfo        = 1005 //GetUserInfo 获取用户信息
+	ProtoIDVerification       = 1006 // 请求或输入验证码
+	ProtoIDGetDelayStatistics = 1007 //GetDelayStatistics  获取延迟统计
+)
+
+var workers map[uint32]protocol.Worker = make(map[uint32]protocol.Worker)
+
+func init() {
+	workers[ProtoIDInitConnect] = protocol.NewGetter()
+	workers[ProtoIDGetGlobalState] = protocol.NewGetter()
+	workers[ProtoIDNotify] = protocol.NewUpdater()
+	workers[ProtoIDKeepAlive] = protocol.NewGetter()
+	workers[ProtoIDGetUserInfo] = protocol.NewGetter()
+	workers[ProtoIDVerification] = protocol.NewGetter()
+	workers[ProtoIDGetDelayStatistics] = protocol.NewGetter()
+}
+
 var (
+	ErrParameters    = errors.New("parameters missing or invalid")
 	ErrInterrupted   = errors.New("process is interrupted")
 	ErrChannelClosed = errors.New("channel is closed")
 )
+
+type OptionalInt32 struct {
+	Value int32
+}
+
+type OptionalUInt64 struct {
+	Value uint64
+}
+
+type OptionalDouble struct {
+	Value float64
+}
+
+type OptionalBool struct {
+	Value bool
+}
 
 // FutuAPI 是富途开放API的主要操作对象。
 type FutuAPI struct {
@@ -33,14 +72,11 @@ type FutuAPI struct {
 	protoFmt   common.ProtoFmt
 
 	// TCP连接，连接后设置
-	conn   *tcp.Conn
 	connID uint64
 	userID uint64
-	// 数据接收注册表
-	reg *protocol.Registry
+	// protocol
+	proto *protocol.FutuProtocol
 
-	serial uint32
-	mu     sync.Mutex
 	// 发送心跳的定时器，连接后设置
 	ticker *time.Ticker
 	// 心跳定时器关闭信号通道
@@ -50,9 +86,7 @@ type FutuAPI struct {
 // NewFutuAPI 创建API对象，并启动goroutine进行发送保活心跳.
 func NewFutuAPI() *FutuAPI {
 	return &FutuAPI{
-		reg:    protocol.NewRegistry(),
-		done:   make(chan struct{}),
-		serial: 1,
+		done: make(chan struct{}),
 	}
 }
 
@@ -84,28 +118,27 @@ func (api *FutuAPI) SetEncAlgo(algo common.PacketEncAlgo) {
 	api.encAlgo = algo
 }
 
-func (api *FutuAPI) serialNo() uint32 {
-	// 递增serial
-	api.mu.Lock()
-	defer api.mu.Unlock()
-	api.serial++
-	return api.serial
+func (api *FutuAPI) packetID() *common.PacketID {
+	return &common.PacketID{
+		ConnID:   proto.Uint64(api.connID),
+		SerialNo: proto.Uint32(api.proto.SerialNo()),
+	}
 }
 
 // 连接FutuOpenD
 func (api *FutuAPI) Connect(ctx context.Context, address string) error {
-	conn, err := tcp.Dial(address, protocol.NewDecoder(api.reg))
+	proto, err := protocol.Connect(address, workers)
 	if err != nil {
 		return err
 	}
-	api.conn = conn
-	resp, err := api.initConnect(ctx, api.clientVer, api.clientID, api.recvNotify, api.encAlgo, api.protoFmt, "golang")
+	api.proto = proto
+	resp, err := api.initConnect(ctx, api.clientVer, api.clientID, api.recvNotify, api.encAlgo, api.protoFmt, "go")
 	if err != nil {
 		return err
 	}
-	api.connID = resp.ConnID
-	api.userID = resp.LoginUserID
-	if d := resp.KeepAliveInterval; d > 0 {
+	api.connID = resp.GetConnID()
+	api.userID = resp.GetLoginUserID()
+	if d := resp.GetKeepAliveInterval(); d > 0 {
 		api.ticker = time.NewTicker(time.Second * time.Duration(d))
 		go api.heartBeat(ctx)
 	}
@@ -114,11 +147,10 @@ func (api *FutuAPI) Connect(ctx context.Context, address string) error {
 
 // 关闭连接
 func (api *FutuAPI) Close(ctx context.Context) error {
-	if err := api.conn.Close(); err != nil {
+	if err := api.proto.Close(); err != nil {
 		return err
 	}
 	close(api.done)
-	api.reg.Close()
 	return nil
 }
 
@@ -136,55 +168,33 @@ func (api *FutuAPI) heartBeat(ctx context.Context) {
 	}
 }
 
-func (api *FutuAPI) get(proto uint32, req proto.Message, out protocol.RespChan) error {
-	// 获取serial
-	se := api.serialNo()
-	// 在registry注册get channel
-	if err := api.reg.AddGetChan(proto, se, out); err != nil {
-		return err
-	}
-	// 向服务器发送req
-	if err := api.conn.Write(protocol.NewEncoder(proto, se, req)); err != nil {
-		if err := api.reg.RemoveChan(proto, se); err != nil {
-			return err
-		}
-		return err
-	}
-	return nil
-}
-
-func (api *FutuAPI) update(proto uint32, out protocol.RespChan) error {
-	// 在registry注册update channel
-	if err := api.reg.AddUpdateChan(proto, out); err != nil {
-		return err
-	}
-	return nil
-}
-
-const (
-	ProtoIDInitConnect    = 1001 //InitConnect	初始化连接
-	ProtoIDGetGlobalState = 1002 //GetGlobalState	获取全局状态
-	ProtoIDNotify         = 1003 //Notify	系统通知推送
-	ProtoIDKeepAlive      = 1004 //KeepAlive	保活心跳
-)
-
 // 初始化连接
-func (api *FutuAPI) initConnect(ctx context.Context, clientVer int32, clientID string, recvNotify bool,
-	encAlgo common.PacketEncAlgo, protoFmt common.ProtoFmt, lang string) (*initConnectResp, error) {
+func (api *FutuAPI) initConnect(ctx context.Context, clientVer int32, clientID string,
+	recvNotify bool, encAlgo common.PacketEncAlgo, protoFmt common.ProtoFmt, lang string) (*initconnect.S2C, error) {
+
+	if clientID == "" {
+		return nil, ErrParameters
+	}
 	// 请求参数
-	req := initconnect.Request{C2S: &initconnect.C2S{
-		ClientVer:           &clientVer,
-		ClientID:            &clientID,
-		RecvNotify:          &recvNotify,
-		PacketEncAlgo:       (*int32)(&encAlgo),
-		PushProtoFmt:        (*int32)(&protoFmt),
-		ProgrammingLanguage: &lang,
-	}}
+	req := &initconnect.Request{
+		C2S: &initconnect.C2S{
+			ClientVer:     proto.Int32(clientVer),
+			ClientID:      proto.String(clientID),
+			RecvNotify:    proto.Bool(recvNotify),
+			PacketEncAlgo: proto.Int32(int32(encAlgo)),
+			PushProtoFmt:  proto.Int32(int32(protoFmt)),
+		},
+	}
+	if lang != "" {
+		req.C2S.ProgrammingLanguage = proto.String(lang)
+	}
+
 	// 发送请求，同步返回结果
-	ch := make(initconnect.ResponseChan)
-	if err := api.get(ProtoIDInitConnect, &req, ch); err != nil {
+	ch := make(chan *initconnect.Response)
+	if err := api.proto.RegisterGet(ProtoIDInitConnect, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
+
 	select {
 	case <-ctx.Done():
 		return nil, ErrInterrupted
@@ -192,42 +202,21 @@ func (api *FutuAPI) initConnect(ctx context.Context, clientVer int32, clientID s
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return initConnectRespFromPB(resp.GetS2C()), protocol.Error(resp)
-	}
-}
-
-type initConnectResp struct {
-	ServerVer         int32  //FutuOpenD 的版本号
-	LoginUserID       uint64 //FutuOpenD 登陆的牛牛用户 ID
-	ConnID            uint64 //此连接的连接 ID，连接的唯一标识
-	ConnAESKey        string //此连接后续 AES 加密通信的 Key，固定为16字节长字符串
-	KeepAliveInterval int32  //心跳保活间隔
-	AESCBCiv          string //AES 加密通信 CBC 加密模式的 iv，固定为16字节长字符串
-}
-
-func initConnectRespFromPB(pb *initconnect.S2C) *initConnectResp {
-	if pb == nil {
-		return nil
-	}
-	return &initConnectResp{
-		ServerVer:         pb.GetServerVer(),
-		LoginUserID:       pb.GetLoginUserID(),
-		ConnID:            pb.GetConnID(),
-		ConnAESKey:        pb.GetConnAESKey(),
-		KeepAliveInterval: pb.GetKeepAliveInterval(),
-		AESCBCiv:          pb.GetAesCBCiv(),
+		return resp.GetS2C(), protocol.Error(resp)
 	}
 }
 
 // KeepAlive 保活心跳
 func (api *FutuAPI) keepAlive(ctx context.Context, t int64) (int64, error) {
 	// 请求参数
-	req := keepalive.Request{C2S: &keepalive.C2S{
-		Time: &t,
-	}}
+	req := &keepalive.Request{
+		C2S: &keepalive.C2S{
+			Time: proto.Int64(t),
+		},
+	}
 	// 发送请求，同步返回结果
-	ch := make(keepalive.ResponseChan)
-	if err := api.get(ProtoIDKeepAlive, &req, ch); err != nil {
+	ch := make(chan *keepalive.Response)
+	if err := api.proto.RegisterGet(ProtoIDKeepAlive, req, protocol.NewProtobufChan(ch)); err != nil {
 		return 0, err
 	}
 	select {
@@ -242,14 +231,16 @@ func (api *FutuAPI) keepAlive(ctx context.Context, t int64) (int64, error) {
 }
 
 // 获取全局状态
-func (api *FutuAPI) GetGlobalState(ctx context.Context) (*GlobalState, error) {
+func (api *FutuAPI) GetGlobalState(ctx context.Context) (*getglobalstate.S2C, error) {
 	// 请求参数
-	req := getglobalstate.Request{C2S: &getglobalstate.C2S{
-		UserID: &api.userID,
-	}}
+	req := &getglobalstate.Request{
+		C2S: &getglobalstate.C2S{
+			UserID: proto.Uint64(api.UserID()),
+		},
+	}
 	// 发送请求，同步返回结果
-	ch := make(getglobalstate.ResponseChan)
-	if err := api.get(ProtoIDGetGlobalState, &req, ch); err != nil {
+	ch := make(chan *getglobalstate.Response)
+	if err := api.proto.RegisterGet(ProtoIDGetGlobalState, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
 	select {
@@ -259,206 +250,113 @@ func (api *FutuAPI) GetGlobalState(ctx context.Context) (*GlobalState, error) {
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return globalStateFromPB(resp.GetS2C()), protocol.Error(resp)
-	}
-}
-
-type GlobalState struct {
-	MarketHK       qotcommon.QotMarketState
-	MarketUS       qotcommon.QotMarketState
-	MarketSH       qotcommon.QotMarketState
-	MarketSZ       qotcommon.QotMarketState
-	MarketHKFuture qotcommon.QotMarketState
-	MarketUSFuture qotcommon.QotMarketState
-	QotLogined     bool
-	TrdLogined     bool
-	ServerVer      int32
-	ServerBuildNo  int32
-	Time           int64
-	LocalTime      float64
-	ProgramStatus  *ProgramStatus
-	QotSvrIpAddr   string
-	TrdSvrIpAddr   string
-	ConnID         uint64
-}
-
-func globalStateFromPB(resp *getglobalstate.S2C) *GlobalState {
-	if resp == nil {
-		return nil
-	}
-	return &GlobalState{
-		MarketHK:       qotcommon.QotMarketState(resp.GetMarketHK()),
-		MarketUS:       qotcommon.QotMarketState(resp.GetMarketUS()),
-		MarketSH:       qotcommon.QotMarketState(resp.GetMarketSH()),
-		MarketSZ:       qotcommon.QotMarketState(resp.GetMarketSZ()),
-		MarketHKFuture: qotcommon.QotMarketState(resp.GetMarketHKFuture()),
-		MarketUSFuture: qotcommon.QotMarketState(resp.GetMarketUSFuture()),
-		QotLogined:     resp.GetQotLogined(),
-		TrdLogined:     resp.GetTrdLogined(),
-		ServerVer:      resp.GetServerVer(),
-		ServerBuildNo:  resp.GetServerBuildNo(),
-		Time:           resp.GetTime(),
-		LocalTime:      resp.GetLocalTime(),
-		ProgramStatus:  programStatusFromPB(resp.GetProgramStatus()),
-		QotSvrIpAddr:   resp.GetQotSvrIpAddr(),
-		TrdSvrIpAddr:   resp.GetTrdSvrIpAddr(),
-		ConnID:         resp.GetConnID(),
+		return resp.GetS2C(), protocol.Error(resp)
 	}
 }
 
 // 系统推送通知
-func (api *FutuAPI) SysNotify(ctx context.Context) (<-chan *SysNotifyResp, error) {
-	ch := make(notifyChan)
-	if err := api.update(ProtoIDNotify, ch); err != nil {
+func (api *FutuAPI) SysNotify(ctx context.Context) (<-chan *notify.Response, error) {
+	ch := make(chan *notify.Response)
+	if err := api.proto.RegisterUpdate(ProtoIDNotify, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
 	return ch, nil
 }
 
-type SysNotifyResp struct {
-	Notification *Notification
-	Err          error
+// 获取延迟统计
+func (api *FutuAPI) GetDelayStatistics(ctx context.Context, typeList []getdelaystatistics.DelayStatisticsType,
+	pushStage getdelaystatistics.QotPushStage, segmentList []int32) (*getdelaystatistics.S2C, error) {
+
+	if len(typeList) == 0 {
+		return nil, ErrParameters
+	}
+	// 请求参数
+	req := &getdelaystatistics.Request{
+		C2S: &getdelaystatistics.C2S{
+			TypeList: make([]int32, len(typeList)),
+		},
+	}
+	for i, v := range typeList {
+		req.C2S.TypeList[i] = int32(v)
+	}
+	if pushStage != getdelaystatistics.QotPushStage_QotPushStage_Unkonw {
+		req.C2S.QotPushStage = proto.Int32(int32(pushStage))
+	}
+	if len(segmentList) != 0 {
+		req.C2S.SegmentList = segmentList
+	}
+
+	// 发送请求，同步返回结果
+	ch := make(chan *getdelaystatistics.Response)
+	if err := api.proto.RegisterGet(ProtoIDGetDelayStatistics, req, protocol.NewProtobufChan(ch)); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ErrInterrupted
+	case resp, ok := <-ch:
+		if !ok {
+			return nil, ErrChannelClosed
+		}
+		return resp.GetS2C(), protocol.Error(resp)
+	}
 }
 
-type notifyChan chan *SysNotifyResp
+func (api *FutuAPI) Verify(ctx context.Context, vType verification.VerificationType, op verification.VerificationOp,
+	code string) error {
 
-var _ protocol.RespChan = make(notifyChan)
+	if vType == verification.VerificationType_VerificationType_Unknow ||
+		op == verification.VerificationOp_VerificationOp_Unknow ||
+		(op == verification.VerificationOp_VerificationOp_InputAndLogin && code == "") {
+		return ErrParameters
+	}
+	req := &verification.Request{
+		C2S: &verification.C2S{
+			Type: proto.Int32(int32(vType)),
+			Op:   proto.Int32(int32(op)),
+		},
+	}
+	if code != "" {
+		req.C2S.Code = proto.String(code)
+	}
 
-func (ch notifyChan) Send(b []byte) error {
-	var resp notify.Response
-	if err := proto.Unmarshal(b, &resp); err != nil {
+	ch := make(chan *verification.Response)
+	if err := api.proto.RegisterGet(ProtoIDVerification, req, protocol.NewProtobufChan(ch)); err != nil {
 		return err
 	}
-	ch <- &SysNotifyResp{
-		Notification: notificationFromPB(resp.GetS2C()),
-		Err:          protocol.Error(&resp),
-	}
-	return nil
-}
 
-func (ch notifyChan) Close() {
-	close(ch)
-}
-
-type Notification struct {
-	Type          notify.NotifyType    //*通知类型
-	Event         *GtwEvent            //事件通息
-	ProgramStatus *NotifyProgramStatus //程序状态
-	ConnectStatus *ConnectStatus       //连接状态
-	QotRight      *QotRight            //行情权限
-	APILevel      *APILevel            //用户等级，已在2.10版本之后废弃
-	APIQuota      *APIQuota            //API 额度
-}
-
-func notificationFromPB(pb *notify.S2C) *Notification {
-	if pb == nil {
-		return nil
-	}
-	return &Notification{
-		Type:          notify.NotifyType(pb.GetType()),
-		Event:         gtwEventFromPB(pb.GetEvent()),
-		ProgramStatus: notifyProgramStatusFromPB(pb.GetProgramStatus()),
-		ConnectStatus: connectStatusFromPB(pb.GetConnectStatus()),
-		QotRight:      qotRightFromPB(pb.GetQotRight()),
-		APILevel:      apiLevelFromPB(pb.GetApiLevel()),
-		APIQuota:      apiQuotaFromPB(pb.GetApiQuota()),
+	select {
+	case <-ctx.Done():
+		return ErrInterrupted
+	case resp, ok := <-ch:
+		if !ok {
+			return ErrChannelClosed
+		}
+		return protocol.Error(resp)
 	}
 }
 
-type GtwEvent struct {
-	EventType notify.GtwEventType //*GtwEventType,事件类型
-	Desc      string              //*事件描述
-}
-
-func gtwEventFromPB(pb *notify.GtwEvent) *GtwEvent {
-	if pb == nil {
-		return nil
+// 获取用户信息, flag = 0返回全部信息
+func (api *FutuAPI) GetUserInfo(ctx context.Context, flag getuserinfo.UserInfoField) (*getuserinfo.S2C, error) {
+	// 请求参数
+	req := &getuserinfo.Request{
+		C2S: &getuserinfo.C2S{},
 	}
-	return &GtwEvent{
-		EventType: notify.GtwEventType(pb.GetEventType()),
-		Desc:      pb.GetDesc(),
+	if flag != 0 {
+		req.C2S.Flag = proto.Int32(int32(flag))
 	}
-}
-
-type NotifyProgramStatus struct {
-	ProgramStatus *ProgramStatus //*当前程序状态
-}
-
-func notifyProgramStatusFromPB(pb *notify.ProgramStatus) *NotifyProgramStatus {
-	if pb == nil {
-		return nil
+	// 发送请求，同步返回结果
+	ch := make(chan *getuserinfo.Response)
+	if err := api.proto.RegisterGet(ProtoIDGetUserInfo, req, protocol.NewProtobufChan(ch)); err != nil {
+		return nil, err
 	}
-	return &NotifyProgramStatus{
-		ProgramStatus: programStatusFromPB(pb.GetProgramStatus()),
-	}
-}
-
-type ConnectStatus struct {
-	QotLogined bool //*是否登陆行情服务器
-	TrdLogined bool //*是否登陆交易服务器
-}
-
-func connectStatusFromPB(pb *notify.ConnectStatus) *ConnectStatus {
-	if pb == nil {
-		return nil
-	}
-	return &ConnectStatus{
-		QotLogined: pb.GetQotLogined(),
-		TrdLogined: pb.GetTrdLogined(),
-	}
-}
-
-type QotRight struct {
-	HKQotRight          qotcommon.QotRight //*港股行情权限, Qot_Common.QotRight
-	USQotRight          qotcommon.QotRight //*美股行情权限, Qot_Common.QotRight
-	CNQotRight          qotcommon.QotRight //*A股行情权限, Qot_Common.QotRight
-	HKOptionQotRight    qotcommon.QotRight //港股期权行情权限, Qot_Common.QotRight
-	HasUSOptionQotRight bool               //是否有美股期权行情权限
-	HKFutureQotRight    qotcommon.QotRight //港股期货行情权限, Qot_Common.QotRight
-	USFutureQotRight    qotcommon.QotRight //美股期货行情权限, Qot_Common.QotRight
-	USOptionQotRight    qotcommon.QotRight //美股期货行情权限, Qot_Common.QotRight
-}
-
-func qotRightFromPB(pb *notify.QotRight) *QotRight {
-	if pb == nil {
-		return nil
-	}
-	return &QotRight{
-		HKQotRight:          qotcommon.QotRight(pb.GetHkQotRight()),
-		USQotRight:          qotcommon.QotRight(pb.GetUsQotRight()),
-		CNQotRight:          qotcommon.QotRight(pb.GetCnQotRight()),
-		HKOptionQotRight:    qotcommon.QotRight(pb.GetHkOptionQotRight()),
-		HasUSOptionQotRight: pb.GetHasUSOptionQotRight(),
-		HKFutureQotRight:    qotcommon.QotRight(pb.GetHkFutureQotRight()),
-		USFutureQotRight:    qotcommon.QotRight(pb.GetUsFutureQotRight()),
-		USOptionQotRight:    qotcommon.QotRight(pb.GetUsOptionQotRight()),
-	}
-}
-
-type APILevel struct {
-	APILevel string //*api用户等级描述，已在2.10版本之后废弃
-}
-
-func apiLevelFromPB(pb *notify.APILevel) *APILevel {
-	if pb == nil {
-		return nil
-	}
-	return &APILevel{
-		APILevel: pb.GetApiLevel(),
-	}
-}
-
-type APIQuota struct {
-	SubQuota       int32 //*订阅额度
-	HistoryKLQuota int32 //*历史K线额度
-}
-
-func apiQuotaFromPB(pb *notify.APIQuota) *APIQuota {
-	if pb == nil {
-		return nil
-	}
-	return &APIQuota{
-		SubQuota:       pb.GetSubQuota(),
-		HistoryKLQuota: pb.GetHistoryKLQuota(),
+	select {
+	case <-ctx.Done():
+		return nil, ErrInterrupted
+	case resp, ok := <-ch:
+		if !ok {
+			return nil, ErrChannelClosed
+		}
+		return resp.GetS2C(), protocol.Error(resp)
 	}
 }
