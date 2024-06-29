@@ -3,26 +3,34 @@ package futuapi
 import (
 	"context"
 
+	"github.com/hurisheng/go-futu-api/pb/qotcommon"
 	"github.com/hurisheng/go-futu-api/pb/qotgetorderbook"
 	"github.com/hurisheng/go-futu-api/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ProtoIDQotGetOrderBook = 3012 //Qot_GetOrderBook	获取买卖盘
-)
+const ProtoIDQotGetOrderBook = 3012 //Qot_GetOrderBook	获取买卖盘
+
+func init() {
+	workers[ProtoIDQotGetOrderBook] = protocol.NewGetter()
+}
 
 // 获取实时摆盘
-func (api *FutuAPI) GetOrderBook(ctx context.Context, security *Security, num int32) (*RTOrderBook, error) {
+func (api *FutuAPI) GetOrderBook(ctx context.Context, security *qotcommon.Security, num int32) (*qotgetorderbook.S2C, error) {
+
+	if security == nil {
+		return nil, ErrParameters
+	}
 	// 请求参数
-	req := qotgetorderbook.Request{
+	req := &qotgetorderbook.Request{
 		C2S: &qotgetorderbook.C2S{
-			Security: security.pb(),
-			Num:      &num,
+			Security: security,
+			Num:      proto.Int32(num),
 		},
 	}
 	// 发送请求，同步返回结果
-	ch := make(qotgetorderbook.ResponseChan)
-	if err := api.get(ProtoIDQotGetOrderBook, &req, ch); err != nil {
+	ch := make(chan *qotgetorderbook.Response)
+	if err := api.proto.RegisterGet(ProtoIDQotGetOrderBook, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
 	select {
@@ -32,21 +40,6 @@ func (api *FutuAPI) GetOrderBook(ctx context.Context, security *Security, num in
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return rtOrderBookFromGetPB(resp.GetS2C()), protocol.Error(resp)
-	}
-}
-
-func rtOrderBookFromGetPB(pb *qotgetorderbook.S2C) *RTOrderBook {
-	if pb == nil {
-		return nil
-	}
-	return &RTOrderBook{
-		Security:                securityFromPB(pb.GetSecurity()),
-		Asks:                    orderBookListFromPB(pb.GetOrderBookAskList()),
-		Bids:                    orderBookListFromPB(pb.GetOrderBookBidList()),
-		SvrRecvTimeBid:          pb.GetSvrRecvTimeBid(),
-		SvrRecvTimeBidTimestamp: pb.GetSvrRecvTimeBidTimestamp(),
-		SvrRecvTimeAsk:          pb.GetSvrRecvTimeAsk(),
-		SvrRecvTimeAskTimestamp: pb.GetSvrRecvTimeAskTimestamp(),
+		return resp.GetS2C(), protocol.Error(resp)
 	}
 }

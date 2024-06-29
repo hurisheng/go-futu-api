@@ -3,24 +3,31 @@ package futuapi
 import (
 	"context"
 
+	"github.com/hurisheng/go-futu-api/pb/qotcommon"
 	"github.com/hurisheng/go-futu-api/pb/qotgetownerplate"
 	"github.com/hurisheng/go-futu-api/protocol"
 )
 
-const (
-	ProtoIDQotGetOwnerPlate = 3207 //Qot_GetOwnerPlate	获取股票所属板块
-)
+const ProtoIDQotGetOwnerPlate = 3207 //Qot_GetOwnerPlate	获取股票所属板块
+
+func init() {
+	workers[ProtoIDQotGetOwnerPlate] = protocol.NewGetter()
+}
 
 // 获取股票所属板块
-func (api *FutuAPI) GetOwnerPlate(ctx context.Context, securities []*Security) ([]*OwnerPlate, error) {
+func (api *FutuAPI) GetOwnerPlate(ctx context.Context, securities []*qotcommon.Security) ([]*qotgetownerplate.SecurityOwnerPlate, error) {
+
+	if len(securities) == 0 {
+		return nil, ErrParameters
+	}
 	// 请求数据
-	req := qotgetownerplate.Request{
+	req := &qotgetownerplate.Request{
 		C2S: &qotgetownerplate.C2S{
-			SecurityList: securityList(securities).pb(),
+			SecurityList: securities,
 		},
 	}
-	ch := make(qotgetownerplate.ResponseChan)
-	if err := api.get(ProtoIDQotGetOwnerPlate, &req, ch); err != nil {
+	ch := make(chan *qotgetownerplate.Response)
+	if err := api.proto.RegisterGet(ProtoIDQotGetOwnerPlate, req, protocol.NewProtobufChan(ch)); err != nil {
 		return nil, err
 	}
 	select {
@@ -30,32 +37,6 @@ func (api *FutuAPI) GetOwnerPlate(ctx context.Context, securities []*Security) (
 		if !ok {
 			return nil, ErrChannelClosed
 		}
-		return ownerPlateListFromPB(resp.GetS2C().GetOwnerPlateList()), protocol.Error(resp)
+		return resp.GetS2C().GetOwnerPlateList(), protocol.Error(resp)
 	}
-}
-
-type OwnerPlate struct {
-	Security   *Security
-	PlateInfos []*PlateInfo
-}
-
-func ownerPlateFromPB(pb *qotgetownerplate.SecurityOwnerPlate) *OwnerPlate {
-	if pb == nil {
-		return nil
-	}
-	return &OwnerPlate{
-		Security:   securityFromPB(pb.GetSecurity()),
-		PlateInfos: plateInfoListFromPB(pb.GetPlateInfoList()),
-	}
-}
-
-func ownerPlateListFromPB(pb []*qotgetownerplate.SecurityOwnerPlate) []*OwnerPlate {
-	if pb == nil {
-		return nil
-	}
-	p := make([]*OwnerPlate, len(pb))
-	for i, v := range pb {
-		p[i] = ownerPlateFromPB(v)
-	}
-	return p
 }

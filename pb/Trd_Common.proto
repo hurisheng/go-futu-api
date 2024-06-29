@@ -12,6 +12,14 @@ enum TrdEnv
 	TrdEnv_Real = 1; //真实环境
 }
 
+//交易品类
+enum TrdCategory
+{
+	TrdCategory_Unknown = 0; //未知品类
+	TrdCategory_Security = 1; //证券
+	TrdCategory_Future = 2; //期货
+}
+
 //交易市场，是大的市场，不是具体品种
 enum TrdMarket
 {
@@ -21,6 +29,13 @@ enum TrdMarket
 	TrdMarket_CN = 3; //大陆市场
 	TrdMarket_HKCC = 4; //香港A股通市场
 	TrdMarket_Futures = 5; //期货市场
+	TrdMarket_SG = 6; //期货市场
+    TrdMarket_Futures_Simulate_HK = 10; // 模拟交易期货市场
+    TrdMarket_Futures_Simulate_US = 11;
+    TrdMarket_Futures_Simulate_SG = 12;
+    TrdMarket_Futures_Simulate_JP = 13;
+	TrdMarket_HK_Fund = 113; //香港基金市场
+	TrdMarket_US_Fund = 123; //美国基金市场
 }
 
 //可交易证券所属市场，目前主要是区分A股的沪市和深市，香港和美国暂不需要细分
@@ -58,6 +73,24 @@ enum OrderType
 	OrderType_AuctionLimit = 7; //竞价限价订单(目前仅港股)，仅早盘竞价和收盘竞价有效，参与竞价，且要求满足指定价格才会成交
 	OrderType_SpecialLimit = 8; //特别限价订单(目前仅港股)，成交规则同增强限价订单，且部分成交后，交易所自动撤销订单
 	OrderType_SpecialLimit_All = 9; //特别限价且要求全部成交订单(目前仅港股)，要么全部成交，要么自动撤单
+	OrderType_Stop = 10; // 止损市价单
+    OrderType_StopLimit = 11; // 止损限价单
+    OrderType_MarketifTouched = 12; // 触及市价单（止盈）
+    OrderType_LimitifTouched = 13; // 触及限价单（止盈）
+    OrderType_TrailingStop = 14; // 跟踪止损市价单
+    OrderType_TrailingStopLimit = 15; // 跟踪止损限价单
+	OrderType_TWAP_MARKET = 16; // TWAP 市价单 
+	OrderType_TWAP_LIMIT = 17;  // TWAP 市价单 
+	OrderType_VWAP_MARKET = 18; // TWAP 市价单 
+	OrderType_VWAP_LIMIT = 19;  // TWAP 市价单 
+}
+
+//跟踪类型
+enum TrailType
+{
+	TrailType_Unknown = 0; //未知类型
+	TrailType_Ratio = 1; //比例
+	TrailType_Amount = 2; //金额
 }
 
 //订单状态
@@ -126,6 +159,8 @@ enum Currency
     Currency_USD = 2;   // 美元
     Currency_CNH = 3;   // 离岸人民币
 	Currency_JPY = 4;   // 日元
+	Currency_SGD = 5;   // 新币
+	Currency_AUD = 6;   // 澳元
 }
 
 //账户风险控制等级
@@ -150,8 +185,10 @@ enum TimeInForce
 enum SecurityFirm
 {
     SecurityFirm_Unknown = 0;        //未知
-    SecurityFirm_FutuSecurities = 1; //富途证券
-	SecurityFirm_FutuInc = 2;        //富途Inc
+    SecurityFirm_FutuSecurities = 1; //富途证券（香港）
+	SecurityFirm_FutuInc = 2;        //富途证券（美国）
+	SecurityFirm_FutuSG = 3;         //富途证券（新加坡）
+	SecurityFirm_FutuAU = 4;         //富途证券（澳洲）
 }
 
 //模拟交易账户类型
@@ -160,6 +197,7 @@ enum SimAccType
 	SimAccType_Unknown = 0;		//未知
 	SimAccType_Stock = 1;		//股票模拟账户（仅用于交易证券类产品，不支持交易期权）
 	SimAccType_Option = 2;      //期权模拟账户（仅用于交易期权，不支持交易股票证券类产品）
+    SimAccType_Futures = 3;     //期货模拟账户
 }
 
 //风险状态，共分 9 个等级，LEVEL1是最安全，LEVEL9是最危险
@@ -175,6 +213,15 @@ enum CltRiskStatus
 	CltRiskStatus_Level7 = 7;  //预警
 	CltRiskStatus_Level8 = 8;  //预警
 	CltRiskStatus_Level9 = 9;  //预警
+}
+
+//日内交易限制情况
+enum DTStatus
+{
+	DTStatus_Unknown = 0; 		//未知
+	DTStatus_Unlimited = 1;		//无限次(当前可以无限次日内交易，注意留意剩余日内交易购买力)
+	DTStatus_EMCall = 2;		//EM Call(当前状态不能新建仓位，需要补充资产净值至$25000以上，否则会被禁止新建仓位90天)
+	DTStatus_DTCall = 3;		//DT Call(当前状态有未补平的日内交易追缴金额（DTCall），需要在5个交易日内足额入金来补平 DTCall，否则会被禁止新建仓位，直到足额存入资金才会解禁)
 }
 
 //账户现金信息，目前仅用于期货账户
@@ -203,6 +250,7 @@ message TrdAcc
 	optional string cardNum = 5;  //卡号
 	optional int32 securityFirm = 6; //所属券商，取值见SecurityFirm
 	optional int32 simAccType = 7; //模拟交易账号类型，取值见SimAccType
+    optional string uniCardNum = 8;  //所属综合账户卡号
 }
 
 //账户资金结构
@@ -233,6 +281,17 @@ message Funds
 	optional double maxWithdrawal = 21;          //融资可提，仅证券账户适用
 	optional int32 riskStatus = 22;              //风险状态，参见 [CltRiskStatus]，证券账户适用，共分 9 个等级，LEVEL1是最安全，LEVEL9是最危险
 	optional double marginCallMargin = 23;       //	Margin Call 保证金
+	
+	optional bool isPdt = 24;				//是否PDT账户，仅富途证券（美国）账户适用
+	optional string pdtSeq = 25;			//剩余日内交易次数
+	optional double beginningDTBP = 26;		//初始日内交易购买力
+	optional double remainingDTBP = 27;		//剩余日内交易购买力
+	optional double dtCallAmount = 28;		//日内交易待缴金额
+	optional int32 dtStatus = 29;				//日内交易限制情况，取值见DTStatus
+	
+	optional double securitiesAssets = 30; // 证券资产净值
+	optional double fundAssets = 31; // 基金资产净值
+	optional double bondAssets = 32; // 债券资产净值
 }
 
 //账户持仓结构
@@ -261,6 +320,8 @@ message Position
 
     optional double unrealizedPL = 28;       //未实现盈亏，期货适用
     optional double realizedPL = 29;         //已实现盈亏，期货适用
+	optional int32 currency = 30;        // 货币类型，取值参考 Currency
+	optional int32 trdMarket = 31;  //交易市场, 参见TrdMarket的枚举定义
 }
 
 //订单结构
@@ -286,6 +347,25 @@ message Order
     optional string remark = 18; //用户备注字符串，最大长度64字节
 	optional int32 timeInForce = 19; //订单期限，参考 TimeInForce 类的定义
 	optional bool fillOutsideRTH = 20; //是否允许美股订单盘前盘后成交
+	optional double auxPrice = 21; //触发价格
+	optional int32 trailType = 22; //跟踪类型, 参见Trd_Common.TrailType的枚举定义
+	optional double trailValue = 23; //跟踪金额/百分比
+	optional double trailSpread = 24; //指定价差
+	optional int32 currency = 25;        // 货币类型，取值参考 Currency
+	optional int32 trdMarket = 26;  //交易市场, 参见TrdMarket的枚举定义
+}
+
+message OrderFeeItem
+{
+	optional string title = 1; //费用名字
+	optional double value = 2; //费用金额
+}
+
+message OrderFee
+{
+    required string orderIDEx = 1; //扩展订单号
+	optional double feeAmount = 2; //费用总额
+	repeated OrderFeeItem feeList = 3; //费用明细
 }
 
 //成交结构
@@ -329,4 +409,5 @@ message TrdFilterConditions
 	repeated uint64 idList = 2; //ID主键过滤，只返回包含这些ID的数据，没传不过滤，订单是orderID、成交是fillID、持仓是positionID
 	optional string beginTime = 3; //开始时间，严格按YYYY-MM-DD HH:MM:SS或YYYY-MM-DD HH:MM:SS.MS格式传，对持仓无效，拉历史数据必须填
 	optional string endTime = 4; //结束时间，严格按YYYY-MM-DD HH:MM:SS或YYYY-MM-DD HH:MM:SS.MS格式传，对持仓无效，拉历史数据必须填
+	repeated string orderIDExList = 5; // 服务器订单ID，可以用来替代orderID，二选一
 }

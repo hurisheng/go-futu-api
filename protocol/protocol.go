@@ -1,3 +1,4 @@
+// protocol 为消息添加header信息，从tcp连接中解析数据，转换protobuf数据和[]byte格式
 package protocol
 
 import (
@@ -6,14 +7,59 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"log"
-	"net"
 	"reflect"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hurisheng/go-futu-api/tcp"
 	"google.golang.org/protobuf/proto"
 )
+
+type FutuProtocol struct {
+	conn *tcp.Conn
+	de   *decoder
+
+	serial atomic.Uint32 //当前的序列号
+}
+
+func Connect(address string, api map[uint32]Worker) (*FutuProtocol, error) {
+	de := newDecoder(api)
+	conn, err := tcp.Dial(address, de)
+	if err != nil {
+		return nil, err
+	}
+	return &FutuProtocol{
+		conn: conn,
+		de:   de,
+	}, nil
+}
+
+func (ft *FutuProtocol) SerialNo() uint32 {
+	return ft.serial.Add(1)
+}
+
+func (ft *FutuProtocol) RegisterGet(proto uint32, req proto.Message, out *ProtobufChan) error {
+	se := ft.SerialNo()
+	if err := ft.de.register(proto, se, out); err != nil {
+		return err
+	}
+	if err := ft.conn.Write(newEncoder(proto, se, req)); err != nil {
+		if err := ft.de.register(proto, se, nil); err != nil {
+			return err
+		}
+		return err
+	}
+	return nil
+}
+
+func (ft *FutuProtocol) RegisterUpdate(proto uint32, out *ProtobufChan) error {
+	return ft.de.register(proto, 0, out)
+}
+
+func (ft *FutuProtocol) Close() error {
+	ft.de.Close()
+	return ft.conn.Close()
+}
 
 type header struct {
 	HeaderFlag   [2]byte  // 包头起始标志，固定为“FT”
@@ -26,23 +72,21 @@ type header struct {
 	Reserved     [8]byte  // 保留8字节扩展
 }
 
-type FutuEncoder struct {
+type encoder struct {
 	proto  uint32
 	serial uint32
 	msg    proto.Message
 }
 
-var _ tcp.Encoder = (*FutuEncoder)(nil)
-
-func NewEncoder(proto uint32, serial uint32, msg proto.Message) *FutuEncoder {
-	return &FutuEncoder{
+func newEncoder(proto uint32, serial uint32, msg proto.Message) *encoder {
+	return &encoder{
 		proto:  proto,
 		serial: serial,
 		msg:    msg,
 	}
 }
 
-func (en *FutuEncoder) WriteTo(c net.Conn) error {
+func (en *encoder) EncodeTo(w io.Writer) error {
 	// 序列化message
 	b, err := proto.Marshal(en.msg)
 	if err != nil {
@@ -56,12 +100,9 @@ func (en *FutuEncoder) WriteTo(c net.Conn) error {
 		ProtoVer:     0,
 		SerialNo:     en.serial,
 		BodyLen:      uint32(len(b)),
+		BodySHA1:     sha1.Sum(b),
 	}
-	s := sha1.Sum(b)
-	for i, c := range s {
-		h.BodySHA1[i] = c
-	}
-	// 将header和body按顺序写入buffer，然后将buffer写入TCP连接
+	// 将header和body按顺序写入buffer，然后将buffer写入io连接
 	var buf bytes.Buffer
 	if err := binary.Write(&buf, binary.LittleEndian, &h); err != nil {
 		return err
@@ -69,28 +110,30 @@ func (en *FutuEncoder) WriteTo(c net.Conn) error {
 	if _, err := buf.Write(b); err != nil {
 		return err
 	}
-	if _, err := buf.WriteTo(c); err != nil {
+	if _, err := buf.WriteTo(w); err != nil {
 		return err
 	}
 	return nil
 }
 
-type FutuDecoder struct {
-	reg *Registry
+type decoder struct {
+	reg map[uint32]Worker
+
+	mu sync.RWMutex
 }
 
-var _ tcp.Decoder = (*FutuDecoder)(nil)
-
-func NewDecoder(reg *Registry) *FutuDecoder {
-	return &FutuDecoder{reg: reg}
+func newDecoder(api map[uint32]Worker) *decoder {
+	return &decoder{
+		reg: api,
+	}
 }
 
-func (de *FutuDecoder) ReadFrom(c net.Conn) (tcp.Handler, error) {
+func (de *decoder) DecodeFrom(r io.Reader) (tcp.Handler, error) {
 	// 先读出header，然后根据长度读出body
 	// 用registry，proto，serial和body生成当前数据的handler，由tcp框架在gouroutine中处理
 	var h header
 	// read header
-	if err := binary.Read(c, binary.LittleEndian, &h); err != nil {
+	if err := binary.Read(r, binary.LittleEndian, &h); err != nil {
 		return nil, err
 	}
 	if h.HeaderFlag != [2]byte{'F', 'T'} {
@@ -98,296 +141,215 @@ func (de *FutuDecoder) ReadFrom(c net.Conn) (tcp.Handler, error) {
 	}
 	// read body
 	b := make([]byte, h.BodyLen)
-	if _, err := io.ReadFull(c, b); err != nil {
+	if _, err := io.ReadFull(r, b); err != nil {
 		return nil, err
 	}
 	// verify body
-	s := sha1.Sum(b)
-	for i, c := range s {
-		if h.BodySHA1[i] != c {
-			return nil, errors.New("SHA1 sum error")
+	if h.BodySHA1 != sha1.Sum(b) {
+		return nil, errors.New("SHA1 sum error")
+	}
+	//log.Printf("read: proto %v serial %v", h.ProtoID, h.SerialNo)
+	return tcp.HandlerFunc(func() error {
+		//log.Printf("handle: proto %v serial %v", h.ProtoID, h.SerialNo)
+		de.mu.RLock()
+		defer de.mu.RUnlock()
+		if de.reg[h.ProtoID] == nil {
+			return errors.New("worker is not found")
 		}
-	}
-	log.Printf("read: proto %v serial %v", h.ProtoID, h.SerialNo)
-	return &handler{
-		reg:    de.reg,
-		proto:  h.ProtoID,
-		serial: h.SerialNo,
-		body:   b,
-	}, nil
+		return de.reg[h.ProtoID].handle(h.SerialNo, b)
+	}), nil
 }
 
-type handler struct {
-	reg    *Registry
-	proto  uint32
-	serial uint32
-	body   []byte
-}
-
-var _ tcp.Handler = (*handler)(nil)
-
-func (h *handler) Handle() {
-	log.Printf("handle: proto %v serial %v", h.proto, h.serial)
-	if err := h.reg.handle(h.proto, h.serial, h.body); err != nil {
-		// todo 错误处理
-		log.Println(err)
-		return
-	}
-	log.Printf("finish: proto %v serial %v", h.proto, h.serial)
-}
-
-type Response interface {
-	GetRetType() int32
-	GetRetMsg() string
-}
-
-func Error(r Response) error {
-	if r.GetRetType() != 0 {
-		return errors.New(r.GetRetMsg())
-	}
-	return nil
-}
-
-// Registry 接收数据处理器注册表
-type Registry struct {
-	m  map[uint32]worker
-	mu sync.RWMutex
-}
-
-// NewRegistry 生成新的Registry
-func NewRegistry() *Registry {
-	return &Registry{m: make(map[uint32]worker)}
-}
-
-// Close 关闭Registry的worker
-func (reg *Registry) Close() {
-	reg.mu.Lock()
-	defer reg.mu.Unlock()
-	for _, v := range reg.m {
-		v.close()
+func (de *decoder) Close() {
+	de.mu.RLock()
+	defer de.mu.RUnlock()
+	for k := range de.reg {
+		de.reg[k].close()
 	}
 }
 
-// AddUpdateChan 添加update方法的接收通道
-func (reg *Registry) AddUpdateChan(proto uint32, ch RespChan) error {
-	return reg.addChan(proto, 0, ch, newUpdateWorker())
-}
-
-// AddGetChan 添加get方法的接收通道
-func (reg *Registry) AddGetChan(proto uint32, serial uint32, ch RespChan) error {
-	return reg.addChan(proto, serial, ch, newGetWorker())
-}
-
-func (reg *Registry) addChan(proto uint32, serial uint32, ch RespChan, w worker) error {
-	reg.mu.Lock()
-	if reg.m[proto] == nil {
-		reg.m[proto] = w
+func (de *decoder) register(proto uint32, serial uint32, out *ProtobufChan) error {
+	de.mu.RLock()
+	defer de.mu.RUnlock()
+	if de.reg[proto] == nil {
+		return errors.New("worker is not found")
 	}
-	reg.mu.Unlock()
-	return reg.m[proto].add(serial, ch)
+	return de.reg[proto].register(serial, out)
 }
 
-var (
-	ErrProtoIDNotFound = errors.New("proto id not found")
-)
-
-func (reg *Registry) RemoveChan(proto uint32, serial uint32) error {
-	reg.mu.RLock()
-	defer reg.mu.RUnlock()
-	w := reg.m[proto]
-	if w == nil {
-		return ErrProtoIDNotFound
-	}
-	return w.remove(serial)
-}
-
-func (reg *Registry) handle(proto uint32, serial uint32, body []byte) error {
-	reg.mu.RLock()
-	defer reg.mu.RUnlock()
-	w := reg.m[proto]
-	if w == nil {
-		return ErrProtoIDNotFound
-	}
-	return w.handle(serial, body)
-}
-
-type RespChan interface {
-	Send(b []byte) error
-	Close()
-}
-
-// 用于接收到数据后，发送协议数据到接收goroutine
-type PBChan struct {
-	v reflect.Value
-	t reflect.Type
-}
-
-var _ RespChan = (*PBChan)(nil)
-
-func NewPBChan(i interface{}) (*PBChan, error) {
-	// i必须为chan *T类型，T为struct，*T实现proto.Message
-	// 通过reflect检查out的类型是否正确
-	v, ct := reflect.ValueOf(i), reflect.TypeOf(i)
-	// must be a channel type
-	if ct.Kind() != reflect.Chan {
-		return nil, errors.New("type is not channel")
-	}
-	// it must be a channel of pointer to the response type which implements proto.Message interface
-	pt := ct.Elem()
-	if pt.Kind() != reflect.Ptr || !pt.Implements(reflect.TypeOf((*proto.Message)(nil)).Elem()) {
-		return nil, errors.New("not a channel of pointer to type implements interface proto.Message")
-	}
-	return &PBChan{v: v, t: pt.Elem()}, nil
-}
-
-func (ch *PBChan) Send(b []byte) error {
-	// resp为*T，分配内存空间转换b的数据
-	resp := reflect.New(ch.t)
-	if err := proto.Unmarshal(b, resp.Interface().(proto.Message)); err != nil {
-		return err
-	}
-	ch.v.Send(resp)
-	return nil
-}
-
-func (ch *PBChan) Close() {
-	ch.v.Close()
-}
-
-type worker interface {
-	add(serial uint32, ch RespChan) error
-	remove(serial uint32) error
+type Worker interface {
+	register(serial uint32, out *ProtobufChan) error
 	handle(serial uint32, body []byte) error
 	close()
 }
 
-var (
-	ErrDuplicateChannel = errors.New("duplicate channel")
-	ErrChannelNotFound  = errors.New("channel not found")
-)
+// updater 处理update数据并推送到指定的chan
+type updater struct {
+	ch *ProtobufChan // 发送消息的chan
 
-// updateWorker 处理update数据推送
-type updateWorker struct {
-	ch RespChan
-
-	serial uint32
-	mu     sync.Mutex
+	serial uint32 // 记录最后接收到的序列号，防止重复数据，新数据序列号递增
+	mu     sync.RWMutex
 }
 
-var _ worker = (*updateWorker)(nil)
-
-func newUpdateWorker() *updateWorker {
-	return &updateWorker{}
+func NewUpdater() Worker {
+	return &updater{}
 }
 
-func (w *updateWorker) add(serial uint32, ch RespChan) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	// channel已经存在，不能重复添加
+func (w *updater) register(_ uint32, out *ProtobufChan) error {
+	// 如果已经存在chan，关闭，然后替换为新的out
 	if w.ch != nil {
-		return ErrDuplicateChannel
+		w.ch.close()
 	}
-	w.serial = 0
-	w.ch = ch
+	w.ch = out
 	return nil
 }
 
-func (w *updateWorker) remove(serial uint32) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.ch == nil {
-		return ErrChannelNotFound
-	}
-	w.ch.Close()
-	w.serial = 0
-	w.ch = nil
-	return nil
-}
-
-func (w *updateWorker) handle(serial uint32, body []byte) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.ch == nil {
-		return ErrChannelNotFound
-	}
+func (w *updater) handle(serial uint32, body []byte) error {
 	// serial需递增，已处理过的serial，可能是重复数据
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.serial >= serial {
-		return errors.New("duplicate serial")
+		return errors.New("might be outdated message received")
 	}
-	// 从channel发送，并记录最新的serial
-	if err := w.ch.Send(body); err != nil {
+	if w.ch == nil {
+		return errors.New("sending out channel is nil")
+	}
+	// 解析消息，并从chan发送，更新serial为最新接收的
+	if err := w.ch.send(body); err != nil {
 		return err
 	}
 	w.serial = serial
 	return nil
 }
 
-func (w *updateWorker) close() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.ch != nil {
-		w.ch.Close()
+func (w *updater) close() {
+	w.ch.close()
+}
+
+type getter struct {
+	m map[uint32]*getterItem
+
+	mu sync.RWMutex
+}
+
+func NewGetter() Worker {
+	return &getter{
+		m: make(map[uint32]*getterItem),
 	}
-	w.serial = 0
-	w.ch = nil
 }
 
-type getWorker struct {
-	m  map[uint32]RespChan
-	mu sync.Mutex
-}
-
-var _ worker = (*getWorker)(nil)
-
-func newGetWorker() *getWorker {
-	return &getWorker{m: make(map[uint32]RespChan)}
-}
-
-func (w *getWorker) add(serial uint32, ch RespChan) error {
+func (w *getter) register(serial uint32, out *ProtobufChan) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// serial已经存在，不能重复添加
+	// serial已经存在，关闭channel，替换为新的out
 	if w.m[serial] != nil {
-		return ErrDuplicateChannel
+		w.m[serial].close()
 	}
-	w.m[serial] = ch
+	w.m[serial] = newGetterItem(out)
 	return nil
 }
 
-func (w *getWorker) remove(serial uint32) error {
+func (w *getter) handle(serial uint32, body []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	ch := w.m[serial]
-	if ch == nil {
-		return ErrChannelNotFound
+	// 根据header的serial找到对应的getterItem，处理完后，从map中移除
+	if w.m[serial] == nil {
+		return errors.New("getter item does not exist")
 	}
-	ch.Close()
-	delete(w.m, serial)
-	return nil
-}
-
-func (w *getWorker) handle(serial uint32, body []byte) error {
-	// 根据header的serial找到对应的channel，找到返回后，从map中移除
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	// serial不存在，返回错误
-	ch := w.m[serial]
-	if ch == nil {
-		return ErrChannelNotFound
-	}
-	// 发送数据后，将serial移除
-	if err := ch.Send(body); err != nil {
+	// 解析消息，并从chan发送，删除getterItem
+	if err := w.m[serial].handle(body); err != nil {
 		return err
 	}
-	ch.Close()
 	delete(w.m, serial)
 	return nil
 }
 
-func (w *getWorker) close() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	for _, v := range w.m {
-		v.Close()
+func (w *getter) close() {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	for k := range w.m {
+		w.m[k].close()
 	}
+}
+
+type getterItem struct {
+	ch *ProtobufChan
+}
+
+func newGetterItem(out *ProtobufChan) *getterItem {
+	return &getterItem{
+		ch: out,
+	}
+}
+
+func (i *getterItem) handle(body []byte) error {
+	if i.ch == nil {
+		return errors.New("sending out channel is nil")
+	}
+	if err := i.ch.send(body); err != nil {
+		return err
+	}
+	i.ch.close()
+	return nil
+}
+
+func (i *getterItem) close() {
+	i.ch.close()
+}
+
+// 用于接收到数据后，发送协议数据到接收channel
+type ProtobufChan struct {
+	v reflect.Value
+	t reflect.Type
+}
+
+// 从chan *T类型转换为ProtobufChan类型，T为struct，*T实现proto.Message
+func NewProtobufChan(i any) *ProtobufChan {
+	// i必须为chan *T类型，T为struct，*T实现proto.Message
+	// 通过reflect检查类型是否正确
+	ct := reflect.TypeOf(i)
+	// must be a channel type
+	if ct.Kind() != reflect.Chan {
+		return nil
+	}
+	// it must be a channel of pointer to the response type which implements proto.Message interface
+	pt := ct.Elem()
+	if pt.Kind() != reflect.Ptr || !pt.Implements(reflect.TypeOf((*proto.Message)(nil)).Elem()) {
+		return nil
+	}
+	st := pt.Elem()
+	if st.Kind() != reflect.Struct {
+		return nil
+	}
+	return &ProtobufChan{v: reflect.ValueOf(i), t: st}
+}
+
+func (ch *ProtobufChan) send(b []byte) error {
+	// resp为*T，分配内存空间转换b的数据
+	buf := reflect.New(ch.t)
+	if err := proto.Unmarshal(b, buf.Interface().(proto.Message)); err != nil {
+		return err
+	}
+	ch.v.Send(buf)
+	return nil
+}
+
+func (ch *ProtobufChan) close() {
+	if ch != nil {
+		ch.v.Close()
+	}
+}
+
+// Response是protobuf接口定义的返回信息获取方法
+type Response interface {
+	GetRetType() int32
+	GetRetMsg() string
+}
+
+// Error将Response转换为error类型
+func Error(r Response) error {
+	if r.GetRetType() != 0 {
+		return errors.New(r.GetRetMsg())
+	}
+	return nil
 }

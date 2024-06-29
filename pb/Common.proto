@@ -38,12 +38,16 @@ enum ProtoFmt
 	ProtoFmt_Json = 1; //Json格式
 }
 
-//用户类型
+//用户注册归属地
 enum UserAttribution
 {
 	UserAttribution_Unknown = 0; //
-	UserAttribution_NN = 1; //牛牛用户
-	UserAttribution_MM = 2; //MooMoo用户
+	UserAttribution_NN = 1; //大陆
+	UserAttribution_MM = 2; //MooMoo
+	UserAttribution_SG = 3; //新加坡
+	UserAttribution_AU = 4; //澳洲
+	UserAttribution_JP = 5; //日本
+	UserAttribution_HK = 6; //香港
 }
 
 enum ProgramStatusType

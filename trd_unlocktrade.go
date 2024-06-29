@@ -3,36 +3,41 @@ package futuapi
 import (
 	"context"
 	"crypto/md5"
+	"fmt"
 
 	"github.com/hurisheng/go-futu-api/pb/trdcommon"
 	"github.com/hurisheng/go-futu-api/pb/trdunlocktrade"
 	"github.com/hurisheng/go-futu-api/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ProtoIDTrdUnlockTrade = 2005 //Trd_UnlockTrade	解锁或锁定交易
-)
+const ProtoIDTrdUnlockTrade = 2005 //Trd_UnlockTrade	解锁或锁定交易
+
+func init() {
+	workers[ProtoIDTrdUnlockTrade] = protocol.NewGetter()
+}
 
 // 解锁交易
-func (api *FutuAPI) UnlockTrade(ctx context.Context, unlock bool, pwd string, firm trdcommon.SecurityFirm) error {
-	req := trdunlocktrade.Request{
+func (api *FutuAPI) UnlockTrade(ctx context.Context, unlock bool,
+	pwd string, firm trdcommon.SecurityFirm) error {
+
+	if unlock && pwd == "" {
+		return ErrParameters
+	}
+	req := &trdunlocktrade.Request{
 		C2S: &trdunlocktrade.C2S{
-			Unlock: &unlock,
+			Unlock: proto.Bool(unlock),
 		},
 	}
 	if pwd != "" {
-		h := md5.New()
-		if _, err := h.Write([]byte(pwd)); err != nil {
-			return err
-		}
-		s := (string)(h.Sum(nil))
-		req.C2S.PwdMD5 = &s
+		req.C2S.PwdMD5 = proto.String(fmt.Sprintf("%x", md5.Sum([]byte(pwd))))
 	}
-	if firm != 0 {
-		req.C2S.SecurityFirm = (*int32)(&firm)
+	if firm != trdcommon.SecurityFirm_SecurityFirm_Unknown {
+		req.C2S.SecurityFirm = proto.Int32(int32(firm))
 	}
-	ch := make(trdunlocktrade.ResponseChan)
-	if err := api.get(ProtoIDTrdUnlockTrade, &req, ch); err != nil {
+
+	ch := make(chan *trdunlocktrade.Response)
+	if err := api.proto.RegisterGet(ProtoIDTrdUnlockTrade, req, protocol.NewProtobufChan(ch)); err != nil {
 		return err
 	}
 	select {
