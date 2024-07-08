@@ -5,6 +5,7 @@
 * Go语言封装的[富途牛牛OpenAPI](https://openapi.futunn.com/futu-api-doc/)。
 * 尽量接近Python版本的使用方法。
 * 利用Go语言特性，例如channel，goroutine等。
+* 暂时还不支持加密，因为底层API对initconnect用的是RSA算法，其他接口是AES，这样对架构设计改动较大，后期再考虑增加
 * 注意：该SDK仍在v0版本，不保证与旧版本兼容，也没有经过充分测试，使用时候请注意，可以直接向我反馈bug或者改进建议
 
 ## 代码结构

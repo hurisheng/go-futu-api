@@ -92,6 +92,7 @@ func (en *encoder) EncodeTo(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// 增加加密方法，RSA和AES
 	// 创建header
 	h := header{
 		HeaderFlag:   [2]byte{'F', 'T'},
