@@ -79,10 +79,10 @@ enum OrderType
     OrderType_LimitifTouched = 13; // 触及限价单（止盈）
     OrderType_TrailingStop = 14; // 跟踪止损市价单
     OrderType_TrailingStopLimit = 15; // 跟踪止损限价单
-	OrderType_TWAP_MARKET = 16; // TWAP 市价单 
-	OrderType_TWAP_LIMIT = 17;  // TWAP 市价单 
-	OrderType_VWAP_MARKET = 18; // TWAP 市价单 
-	OrderType_VWAP_LIMIT = 19;  // TWAP 市价单 
+    OrderType_TWAP = 16; // TWAP市价单
+    OrderType_TWAPLimit = 17; // TWAP限价单
+    OrderType_VWAP = 18; // VWAP损市价单
+    OrderType_VWAPLimit = 19; // VWAP限价单
 }
 
 //跟踪类型
@@ -150,6 +150,13 @@ enum TrdAccType
 	TrdAccType_Cash = 1;    //现金账户
 	TrdAccType_Margin = 2;  //保证金账户
 };
+
+//交易账户状态
+enum TrdAccStatus
+{
+    TrdAccStatus_Active = 0;
+    TrdAccStatus_Disabled = 1;
+}
 
 //货币种类
 enum Currency
@@ -251,6 +258,7 @@ message TrdAcc
 	optional int32 securityFirm = 6; //所属券商，取值见SecurityFirm
 	optional int32 simAccType = 7; //模拟交易账号类型，取值见SimAccType
     optional string uniCardNum = 8;  //所属综合账户卡号
+    optional int32 accStatus = 9; //账号状态，取值见TrdAccStatus
 }
 
 //账户资金结构
