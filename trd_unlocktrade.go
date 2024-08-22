@@ -19,7 +19,7 @@ func init() {
 
 // 解锁交易
 func (api *FutuAPI) UnlockTrade(ctx context.Context, unlock bool,
-	pwd string, firm trdcommon.SecurityFirm) error {
+	pwd string, isMD5 bool, firm trdcommon.SecurityFirm) error {
 
 	if unlock && pwd == "" {
 		return ErrParameters
@@ -30,7 +30,11 @@ func (api *FutuAPI) UnlockTrade(ctx context.Context, unlock bool,
 		},
 	}
 	if pwd != "" {
-		req.C2S.PwdMD5 = proto.String(fmt.Sprintf("%x", md5.Sum([]byte(pwd))))
+		if isMD5 {
+			req.C2S.PwdMD5 = proto.String(pwd)
+		} else {
+			req.C2S.PwdMD5 = proto.String(fmt.Sprintf("%x", md5.Sum([]byte(pwd))))
+		}
 	}
 	if firm != trdcommon.SecurityFirm_SecurityFirm_Unknown {
 		req.C2S.SecurityFirm = proto.Int32(int32(firm))
